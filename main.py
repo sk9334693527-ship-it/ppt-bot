@@ -22,11 +22,45 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # ===== CLEAN =====
 def clean(text):
     text = re.sub(r"\*\*", "", text)
+    text = text.replace("\n\n\n", "\n\n")
     return text.strip()
+
+# ===== STRICT PROMPT =====
+STRICT_PROMPT = """
+You are an OCR extraction engine.
+
+DO NOT solve.
+DO NOT modify.
+DO NOT rephrase.
+
+ONLY copy the text EXACTLY as it appears.
+
+TASK:
+Extract ONLY MCQ questions from the image.
+
+STRICT RULES:
+1. Copy question EXACTLY (character by character)
+2. Do NOT correct spelling
+3. Do NOT translate
+4. Do NOT summarize
+5. Keep same language
+6. If options exist → copy them exactly
+7. If no options → leave blank A) B) C) D)
+
+FORMAT:
+
+Question
+A)
+B)
+C)
+D)
+
+If text is unclear → skip that question.
+"""
 
 # ===== AI FALLBACK =====
 def generate_ai(prompt, image=None):
-    # ===== GEMINI =====
+    # GEMINI
     try:
         if image:
             res = gemini_model.generate_content([prompt, image])
@@ -36,7 +70,7 @@ def generate_ai(prompt, image=None):
     except Exception as e:
         print("Gemini failed:", e)
 
-    # ===== GROQ =====
+    # GROQ
     try:
         chat = groq_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -50,9 +84,7 @@ def generate_ai(prompt, image=None):
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📸 Image | ✍️ Text | 📄 PDF bhejo — main PPT bana dunga"
-    )
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
 
 # ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,20 +99,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         img = Image.open(path)
 
-        prompt = """
-Image me jo question hai use EXACT same likho.
-Language change mat karo.
+        # Crop (optional improvement)
+        w, h = img.size
+        img = img.crop((0, 0, w, int(h * 0.9)))
 
-MCQ format:
-
-Question
-A)
-B)
-C)
-D)
-"""
-
-        data = generate_ai(prompt, image=img)
+        data = generate_ai(STRICT_PROMPT, image=img)
         os.remove(path)
 
         await make_ppt(update, clean(data))
@@ -93,16 +116,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✍️ Text process ho raha hai...")
 
     prompt = f"""
-Question ko EXACT same rakho.
-Language same rakho.
+Convert this text into MCQ format.
 
-MCQ format:
-
-Question
-A)
-B)
-C)
-D)
+STRICT RULES:
+- Question EXACT same rakho
+- Language same rakho
+- No explanation
 
 TEXT:
 {update.message.text}
@@ -132,7 +151,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         prs = Presentation()
-
         batch_size = 2
 
         for i in range(0, total, batch_size):
@@ -140,17 +158,10 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚙️ Pages {i+1}-{i+len(batch)}")
 
             for img in batch:
-                prompt = """
-MCQ questions EXACT same likho.
+                w, h = img.size
+                img = img.crop((0, 0, w, int(h * 0.9)))
 
-FORMAT:
-Question
-A)
-B)
-C)
-D)
-"""
-                data = generate_ai(prompt, image=img)
+                data = generate_ai(STRICT_PROMPT, image=img)
 
                 for block in data.split("\n\n"):
                     lines = [l.strip() for l in block.split("\n") if l.strip()]
@@ -173,6 +184,8 @@ D)
             await update.message.reply_document(InputFile(f))
 
         os.remove(file_name)
+
+        await update.message.reply_text("✅ Done!")
 
     except Exception as e:
         await update.message.reply_text(f"❌ PDF ERROR:\n{str(e)}")
