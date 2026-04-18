@@ -1,6 +1,7 @@
 import os
 import re
 import pdfplumber
+import pytesseract
 import google.generativeai as genai
 from groq import Groq
 from PIL import Image, ImageEnhance, ImageFilter
@@ -27,12 +28,9 @@ def enhance_image(img):
     return img
 
 # ===== AI =====
-def generate_ai(prompt, image=None):
+def generate_ai(prompt):
     try:
-        if image:
-            res = gemini_model.generate_content([prompt, image])
-        else:
-            res = gemini_model.generate_content(prompt)
+        res = gemini_model.generate_content(prompt)
         return res.text
     except:
         try:
@@ -44,20 +42,19 @@ def generate_ai(prompt, image=None):
         except:
             return ""
 
-# ===== HINDI FIX PROMPT =====
+# ===== HINDI FIX =====
 FIX_PROMPT = """
 तुम एक हिंदी टेक्स्ट करेक्शन इंजन हो।
 
 RULES:
-1. केवल मात्रा (ा ि ी ु ू े ै ो ौ) सुधारो
+1. केवल मात्रा सुधारो (ा ि ी ु ू े ै ो ौ)
 2. शब्द मत बदलो
 3. भाषा मत बदलो
 4. नया कुछ मत जोड़ो
 
-फिर उसे MCQ format में convert करो:
+फिर MCQ format में बदलो:
 
 FORMAT:
-
 प्रश्न
 A)
 B)
@@ -121,10 +118,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     img = enhance_image(Image.open(path))
 
-    data = generate_ai("Extract MCQ questions", image=img)
+    text = pytesseract.image_to_string(img, lang="hin+eng")
+
+    fixed = generate_ai(FIX_PROMPT + text)
+
     os.remove(path)
 
-    questions = data.split("\n\n")
+    questions = fixed.split("\n\n")
     await make_ppt(update, questions)
 
 # ===== PDF =====
@@ -137,52 +137,53 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    prs_questions = []
+    questions = []
 
     try:
-        # ===== TEXT EXTRACTION =====
+        # ===== TEXT PDF =====
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages):
                 await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
 
                 text = page.extract_text()
 
-                if text:
-                    # large text safe
-                    if len(text) > 3000:
-                        text = text[:3000]
-
+                if text and len(text.strip()) > 20:
                     fixed = generate_ai(FIX_PROMPT + text)
-
                     if fixed:
-                        qs = fixed.split("\n\n")
-                        prs_questions.extend(qs)
+                        questions.extend(fixed.split("\n\n"))
 
-        # ===== अगर text मिला =====
-        if prs_questions:
+        # ===== अगर मिला =====
+        if questions:
             os.remove(path)
-            await make_ppt(update, prs_questions)
+            await make_ppt(update, questions)
             return
 
-        # ===== FALLBACK (SCANNED PDF) =====
-        await update.message.reply_text("⚠ Scanned PDF detected... AI use ho raha hai")
+        # ===== OCR FALLBACK =====
+        await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
 
         for i in range(1, 30):
-            await update.message.reply_text(f"📄 Page {i} processing...")
+            await update.message.reply_text(f"📄 Page {i} OCR...")
 
-            images = convert_from_path(path, dpi=220, first_page=i, last_page=i)
+            images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
             if not images:
                 break
 
             img = enhance_image(images[0])
 
-            data = generate_ai("Extract MCQ questions", image=img)
+            text = pytesseract.image_to_string(img, lang="hin+eng")
 
-            if data:
-                prs_questions.extend(data.split("\n\n"))
+            if text and len(text.strip()) > 20:
+                fixed = generate_ai(FIX_PROMPT + text)
+                if fixed:
+                    questions.extend(fixed.split("\n\n"))
 
         os.remove(path)
-        await make_ppt(update, prs_questions)
+
+        if not questions:
+            await update.message.reply_text("❌ Kuch bhi extract nahi ho paya (PDF quality low hai)")
+            return
+
+        await make_ppt(update, questions)
 
     except Exception as e:
         await update.message.reply_text(f"❌ ERROR: {str(e)}")
