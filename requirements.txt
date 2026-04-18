@@ -2,6 +2,5 @@ python-telegram-bot==20.7
 python-pptx
 google-generativeai
 Pillow
-pytesseract
-pdfplumber
 pdf2image
+pdfplumber
