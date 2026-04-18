@@ -23,11 +23,11 @@ def clean(text):
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image ya text bhejo — main PPT bana dunga")
+    await update.message.reply_text("📸 Image ya ✍️ Text bhejo — main PPT bana dunga")
 
-# ===== IMAGE (NO OCR) =====
+# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image AI se read ho rahi hai...")
+    await update.message.reply_text("📸 Image process ho rahi hai...")
 
     try:
         photo = update.message.photo[-1]
@@ -39,10 +39,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img = Image.open(path)
 
         prompt = """
-Is image me jo question hai use EXACT same likho.
+Image me jo question hai use EXACT same likho.
 Language change mat karo.
 
-Phir use MCQ format me likho:
+Usko MCQ format me convert karo:
 
 Question
 A)
@@ -63,19 +63,40 @@ No explanation.
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
-# ===== TEXT =====
+# ===== TEXT (NEW FEATURE) =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    user_text = update.message.text
+
+    await update.message.reply_text("✍️ Text se MCQ bana raha hu...")
 
     prompt = f"""
-Is text ko MCQ format me convert karo.
-Question same rakho.
+STRICT RULES:
 
-{text}
+1. Question ko EXACT same rakho (ek bhi word change mat karo)
+2. Language same rakho
+3. Sirf MCQ format me convert karo
+4. No explanation
+
+FORMAT:
+
+Question
+A)
+B)
+C)
+D)
+
+TEXT:
+{user_text}
 """
 
-    response = model.generate_content(prompt)
-    await make_ppt(update, clean(response.text))
+    try:
+        response = model.generate_content(prompt)
+        data = clean(response.text)
+
+        await make_ppt(update, data)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # ===== PPT =====
 async def make_ppt(update, data):
@@ -111,7 +132,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Bot running...")
+    print("🚀 Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
