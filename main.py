@@ -1,12 +1,12 @@
 import os
 import re
-import google.generativeai as genai
-from PIL import Image
 import pytesseract
+from PIL import Image, ImageEnhance
+
+import google.generativeai as genai
 
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
+from pptx.util import Inches
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -20,27 +20,28 @@ model = genai.GenerativeModel("gemini-2.5-flash")
 
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-# ================= CLEAN =================
-def clean_text(text):
-    text = re.sub(r"\*\*", "", text)
-    text = re.sub(r"`", "", text)
-    text = re.sub(r"Explanation.*", "", text, flags=re.DOTALL)
-    return text.strip()
+# ================= OCR IMPROVE =================
+def preprocess_image(img):
+    img = img.convert("L")
 
-# ================= MATH =================
-def format_math(text):
-    text = re.sub(r"sqrt\((.*?)\)", r"√\1", text)
-    text = re.sub(r"(\d+)\^2", r"\1²", text)
-    text = text.replace("/", "⁄")
-    return text
+    # contrast increase
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2)
+
+    # sharpness increase
+    enhancer = ImageEnhance.Sharpness(img)
+    img = enhancer.enhance(2)
+
+    # resize
+    img = img.resize((img.width * 2, img.height * 2))
+
+    return img
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📸 Image ya ✍️ Text bhejo\nMain PPT bana dunga 🎯"
-    )
+    await update.message.reply_text("📸 Image ya text bhejo — main PPT bana dunga!")
 
-# ================= IMAGE HANDLER =================
+# ================= IMAGE =================
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho raha hai...")
 
@@ -51,119 +52,84 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = "input.jpg"
         await file.download_to_drive(file_path)
 
-        # ===== OCR IMPROVEMENT =====
-        img = Image.open(file_path).convert("L")
+        img = Image.open(file_path)
+        img = preprocess_image(img)
 
-        # contrast improve
-        img = img.point(lambda x: 0 if x < 140 else 255)
-
-        # resize (accuracy boost)
-        img = img.resize((img.width * 2, img.height * 2))
-
-        # OCR (Hindi + English)
-        extracted_text = pytesseract.image_to_string(
+        text = pytesseract.image_to_string(
             img,
             config='--oem 3 --psm 6 -l eng+hin'
         )
 
         os.remove(file_path)
 
-        if not extracted_text.strip():
-            await update.message.reply_text("❌ OCR me text nahi mila")
+        if not text.strip():
+            await update.message.reply_text("❌ OCR fail ho gaya")
             return
 
-        # DEBUG: OCR preview
-        await update.message.reply_text("🧾 OCR TEXT:\n" + extracted_text[:500])
+        # DEBUG
+        await update.message.reply_text("🧾 OCR:\n" + text[:500])
 
-        await process_input(update, context, extracted_text)
+        await make_ppt(update, text)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
-# ================= TEXT HANDLER =================
+# ================= TEXT =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await process_input(update, context, update.message.text)
+    await make_ppt(update, update.message.text)
 
-# ================= PROCESS =================
-async def process_input(update, context, user_text):
-    await update.message.reply_text("🤖 MCQ bana raha hu...")
+# ================= AI =================
+def format_text(text):
+    text = re.sub(r"\*\*", "", text)
+    return text.strip()
+
+async def make_ppt(update, text):
+    await update.message.reply_text("🤖 PPT bana raha hu...")
 
     prompt = f"""
-TEXT ko MCQ me convert karo.
+TEXT ko MCQ format me convert karo.
 
 RULES:
-- Question ko change mat karo
-- Same language rakho
+- Question ko same rakho
+- Language same rakho
 - Sirf format karo
 - No explanation
 
-FORMAT:
-Question
-A)
-B)
-C)
-D)
-
 TEXT:
-{user_text}
+{text}
 """
 
     try:
         response = model.generate_content(prompt)
-        data = clean_text(response.text)
-
+        data = format_text(response.text)
     except Exception as e:
-        await update.message.reply_text(f"❌ GEMINI ERROR:\n{str(e)}")
+        await update.message.reply_text(f"❌ AI Error: {str(e)}")
         return
 
-    # ===== PPT =====
-    try:
-        questions = [q.strip() for q in data.split("\n\n") if q.strip()]
+    # PPT
+    prs = Presentation()
 
-        prs = Presentation()
-        prs.slide_width = Inches(13.33)
-        prs.slide_height = Inches(7.5)
+    for block in data.split("\n\n"):
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        if len(lines) < 2:
+            continue
 
-        for q in questions:
-            lines = [format_math(l.strip()) for l in q.split("\n") if l.strip()]
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = lines[0]
 
-            if len(lines) < 2:
-                continue
+        content = slide.placeholders[1].text_frame
+        content.text = ""
 
-            slide = prs.slides.add_slide(prs.slide_layouts[6])
+        for l in lines[1:]:
+            content.add_paragraph().text = l
 
-            # background black
-            bg = slide.background.fill
-            bg.solid()
-            bg.fore_color.rgb = RGBColor(0, 0, 0)
+    file = "output.pptx"
+    prs.save(file)
 
-            box = slide.shapes.add_textbox(Inches(2), Inches(1), Inches(10), Inches(5))
-            tf = box.text_frame
+    with open(file, "rb") as f:
+        await update.message.reply_document(InputFile(f))
 
-            # Question
-            p = tf.paragraphs[0]
-            p.text = lines[0]
-            p.font.size = Pt(32)
-            p.font.bold = True
-            p.font.color.rgb = RGBColor(255, 255, 0)
-
-            # Options
-            for l in lines[1:]:
-                p = tf.add_paragraph()
-                p.text = l
-                p.font.size = Pt(26)
-                p.font.color.rgb = RGBColor(255, 255, 255)
-
-        file_name = "final.pptx"
-        prs.save(file_name)
-
-        with open(file_name, "rb") as f:
-            await update.message.reply_document(InputFile(f))
-
-        os.remove(file_name)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ PPT ERROR:\n{str(e)}")
+    os.remove(file)
 
 # ================= MAIN =================
 def main():
