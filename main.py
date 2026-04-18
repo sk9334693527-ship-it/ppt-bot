@@ -16,7 +16,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
-
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ===== CLEAN =====
@@ -27,21 +26,18 @@ def clean(text):
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
-    img = img.convert("L")  # grayscale
+    img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
 # ===== PROMPTS =====
 STRICT_PROMPT = """
-You are an OCR extraction engine.
-
-ONLY copy text EXACTLY.
-
-Extract MCQ questions.
+You are an OCR engine.
+Copy text EXACTLY.
+Extract MCQ.
 
 FORMAT:
-
 Question
 A)
 B)
@@ -50,8 +46,7 @@ D)
 """
 
 RELAX_PROMPT = """
-Extract MCQ questions from image.
-
+Extract MCQ from image.
 Keep same language.
 
 FORMAT:
@@ -70,19 +65,15 @@ def generate_ai(prompt, image=None):
         else:
             res = gemini_model.generate_content(prompt)
         return res.text
-    except Exception as e:
-        print("Gemini failed:", e)
-
-    try:
-        chat = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama3-70b-8192"
-        )
-        return chat.choices[0].message.content
-    except Exception as e:
-        print("Groq failed:", e)
-
-    return ""
+    except:
+        try:
+            chat = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama3-70b-8192"
+            )
+            return chat.choices[0].message.content
+        except:
+            return ""
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image process ho rahi hai...")
+    await update.message.reply_text("📸 Processing image...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -98,9 +89,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = "img.jpg"
     await file.download_to_drive(path)
 
-    img = Image.open(path)
-    img = enhance_image(img)
-
+    img = enhance_image(Image.open(path))
     data = generate_ai(STRICT_PROMPT, image=img)
 
     if not data or len(data.strip()) < 20:
@@ -112,15 +101,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = f"""
-Convert into MCQ:
-
-{update.message.text}
-"""
+    prompt = f"Convert into MCQ:\n{update.message.text}"
     data = generate_ai(prompt)
     await make_ppt(update, clean(data))
 
-# ===== PDF =====
+# ===== PDF (PAGE-BY-PAGE SAFE) =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
@@ -130,54 +115,59 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    images = convert_from_path(path, dpi=300)  # HIGH DPI
-    os.remove(path)
-
-    if len(images) > 50:
-        await update.message.reply_text("❌ Max 50 pages allowed")
-        return
-
     prs = Presentation()
 
-    for i, img in enumerate(images):
-        await update.message.reply_text(f"⚙️ Page {i+1}")
+    max_pages = 30
 
-        # enhance + crop
-        img = enhance_image(img)
+    for i in range(1, max_pages + 1):
+        try:
+            await update.message.reply_text(f"📄 Page {i} processing...")
 
-        w, h = img.size
-        img = img.crop((0, 0, w, int(h * 0.7)))
+            images = convert_from_path(
+                path,
+                dpi=220,
+                first_page=i,
+                last_page=i
+            )
 
-        data = generate_ai(STRICT_PROMPT, image=img)
+            if not images:
+                break
 
-        if not data or len(data.strip()) < 20:
-            data = generate_ai(RELAX_PROMPT, image=img)
+            img = images[0]
+            img = enhance_image(img)
 
-        print("AI OUTPUT:", data[:300])
+            w, h = img.size
+            img = img.crop((0, 0, w, int(h * 0.7)))
 
-        if not data:
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
-            slide.shapes.title.text = "❌ No Text"
-            slide.placeholders[1].text = "AI failed"
-            continue
+            data = generate_ai(STRICT_PROMPT, image=img)
 
-        for block in data.split("\n\n"):
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
+            if not data or len(data.strip()) < 20:
+                data = generate_ai(RELAX_PROMPT, image=img)
 
-            if len(lines) < 2:
-                slide = prs.slides.add_slide(prs.slide_layouts[1])
-                slide.shapes.title.text = "⚠ Raw Text"
-                slide.placeholders[1].text = block[:500]
+            print("AI OUTPUT:", data[:200])
+
+            if not data:
                 continue
 
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
-            slide.shapes.title.text = lines[0]
+            for block in data.split("\n\n"):
+                lines = [l.strip() for l in block.split("\n") if l.strip()]
+                if len(lines) < 2:
+                    continue
 
-            tf = slide.placeholders[1].text_frame
-            tf.text = ""
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                slide.shapes.title.text = lines[0]
 
-            for l in lines[1:]:
-                tf.add_paragraph().text = l
+                tf = slide.placeholders[1].text_frame
+                tf.text = ""
+
+                for l in lines[1:]:
+                    tf.add_paragraph().text = l
+
+        except Exception as e:
+            print("Page error:", e)
+            continue
+
+    os.remove(path)
 
     file_name = "output.pptx"
     prs.save(file_name)
@@ -198,11 +188,7 @@ async def make_ppt(update, data):
     else:
         for block in data.split("\n\n"):
             lines = [l.strip() for l in block.split("\n") if l.strip()]
-
             if len(lines) < 2:
-                slide = prs.slides.add_slide(prs.slide_layouts[1])
-                slide.shapes.title.text = "⚠ Raw"
-                slide.placeholders[1].text = block[:500]
                 continue
 
             slide = prs.slides.add_slide(prs.slide_layouts[1])
