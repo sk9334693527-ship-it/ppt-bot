@@ -2,7 +2,7 @@ import os
 import re
 import google.generativeai as genai
 from groq import Groq
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
 from pptx import Presentation
@@ -25,15 +25,18 @@ def clean(text):
     text = text.replace("\n\n\n", "\n\n")
     return text.strip()
 
-# ===== STRICT PROMPT =====
+# ===== IMAGE ENHANCE =====
+def enhance_image(img):
+    img = img.convert("L")  # grayscale
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
+
+# ===== PROMPTS =====
 STRICT_PROMPT = """
 You are an OCR extraction engine.
 
-DO NOT solve.
-DO NOT modify.
-DO NOT rephrase.
-
-ONLY copy the text EXACTLY as it appears.
+ONLY copy text EXACTLY.
 
 Extract MCQ questions.
 
@@ -44,11 +47,22 @@ A)
 B)
 C)
 D)
-
-If unclear → skip.
 """
 
-# ===== AI FALLBACK =====
+RELAX_PROMPT = """
+Extract MCQ questions from image.
+
+Keep same language.
+
+FORMAT:
+Question
+A)
+B)
+C)
+D)
+"""
+
+# ===== AI =====
 def generate_ai(prompt, image=None):
     try:
         if image:
@@ -78,129 +92,116 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
-    try:
-        photo = update.message.photo[-1]
-        file = await photo.get_file()
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
 
-        path = "img.jpg"
-        await file.download_to_drive(path)
+    path = "img.jpg"
+    await file.download_to_drive(path)
 
-        img = Image.open(path)
+    img = Image.open(path)
+    img = enhance_image(img)
 
-        data = generate_ai(STRICT_PROMPT, image=img)
-        print("AI OUTPUT:", data[:300])
+    data = generate_ai(STRICT_PROMPT, image=img)
 
-        os.remove(path)
+    if not data or len(data.strip()) < 20:
+        data = generate_ai(RELAX_PROMPT, image=img)
 
-        await make_ppt(update, clean(data))
+    os.remove(path)
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
+    await make_ppt(update, clean(data))
 
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✍️ Text process ho raha hai...")
-
     prompt = f"""
-Convert this into MCQ.
+Convert into MCQ:
 
-TEXT:
 {update.message.text}
 """
-
     data = generate_ai(prompt)
-    print("AI OUTPUT:", data[:300])
-
     await make_ppt(update, clean(data))
 
 # ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
-    try:
-        doc = update.message.document
-        file = await doc.get_file()
+    doc = update.message.document
+    file = await doc.get_file()
 
-        path = "file.pdf"
-        await file.download_to_drive(path)
+    path = "file.pdf"
+    await file.download_to_drive(path)
 
-        images = convert_from_path(path, dpi=150)
-        os.remove(path)
+    images = convert_from_path(path, dpi=300)  # HIGH DPI
+    os.remove(path)
 
-        total = len(images)
+    if len(images) > 50:
+        await update.message.reply_text("❌ Max 50 pages allowed")
+        return
 
-        if total > 50:
-            await update.message.reply_text("❌ Max 50 pages allowed")
-            return
-
-        prs = Presentation()
-        batch_size = 2
-
-        for i in range(0, total, batch_size):
-            batch = images[i:i+batch_size]
-            await update.message.reply_text(f"⚙️ Pages {i+1}-{i+len(batch)}")
-
-            for img in batch:
-                data = generate_ai(STRICT_PROMPT, image=img)
-
-                print("AI OUTPUT:", data[:300])
-
-                # अगर AI कुछ नहीं दे रहा
-                if not data or len(data.strip()) < 20:
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    slide.shapes.title.text = "⚠ No Text Detected"
-                    slide.placeholders[1].text = "AI could not extract text"
-                    continue
-
-                # PPT add
-                blocks = data.split("\n\n")
-
-                for block in blocks:
-                    lines = [l.strip() for l in block.split("\n") if l.strip()]
-
-                    if len(lines) < 2:
-                        slide = prs.slides.add_slide(prs.slide_layouts[1])
-                        slide.shapes.title.text = "⚠ Raw Text"
-                        slide.placeholders[1].text = block[:500]
-                        continue
-
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    slide.shapes.title.text = lines[0]
-
-                    tf = slide.placeholders[1].text_frame
-                    tf.text = ""
-
-                    for l in lines[1:]:
-                        tf.add_paragraph().text = l
-
-        file_name = "output.pptx"
-        prs.save(file_name)
-
-        with open(file_name, "rb") as f:
-            await update.message.reply_document(InputFile(f))
-
-        os.remove(file_name)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ PDF ERROR:\n{str(e)}")
-
-# ===== PPT =====
-async def make_ppt(update, data):
     prs = Presentation()
 
-    if not data or len(data.strip()) < 10:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = "❌ No Data"
-        slide.placeholders[1].text = "AI se kuch nahi mila"
-    else:
-        blocks = data.split("\n\n")
+    for i, img in enumerate(images):
+        await update.message.reply_text(f"⚙️ Page {i+1}")
 
-        for block in blocks:
+        # enhance + crop
+        img = enhance_image(img)
+
+        w, h = img.size
+        img = img.crop((0, 0, w, int(h * 0.7)))
+
+        data = generate_ai(STRICT_PROMPT, image=img)
+
+        if not data or len(data.strip()) < 20:
+            data = generate_ai(RELAX_PROMPT, image=img)
+
+        print("AI OUTPUT:", data[:300])
+
+        if not data:
+            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            slide.shapes.title.text = "❌ No Text"
+            slide.placeholders[1].text = "AI failed"
+            continue
+
+        for block in data.split("\n\n"):
             lines = [l.strip() for l in block.split("\n") if l.strip()]
 
             if len(lines) < 2:
                 slide = prs.slides.add_slide(prs.slide_layouts[1])
                 slide.shapes.title.text = "⚠ Raw Text"
+                slide.placeholders[1].text = block[:500]
+                continue
+
+            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            slide.shapes.title.text = lines[0]
+
+            tf = slide.placeholders[1].text_frame
+            tf.text = ""
+
+            for l in lines[1:]:
+                tf.add_paragraph().text = l
+
+    file_name = "output.pptx"
+    prs.save(file_name)
+
+    with open(file_name, "rb") as f:
+        await update.message.reply_document(InputFile(f))
+
+    os.remove(file_name)
+
+# ===== PPT =====
+async def make_ppt(update, data):
+    prs = Presentation()
+
+    if not data:
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "❌ No Data"
+        slide.placeholders[1].text = "AI failed"
+    else:
+        for block in data.split("\n\n"):
+            lines = [l.strip() for l in block.split("\n") if l.strip()]
+
+            if len(lines) < 2:
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                slide.shapes.title.text = "⚠ Raw"
                 slide.placeholders[1].text = block[:500]
                 continue
 
