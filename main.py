@@ -6,6 +6,7 @@ import pytesseract
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -24,17 +25,19 @@ pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 def clean_text(text):
     text = re.sub(r"\*\*", "", text)
     text = re.sub(r"`", "", text)
+    text = re.sub(r"Explanation.*", "", text, flags=re.DOTALL)
     return text.strip()
 
-# ================= MATH FORMAT =================
+# ================= MATH =================
 def format_math(text):
     text = re.sub(r"sqrt\((.*?)\)", r"√\1", text)
+    text = re.sub(r"(\d+)\^2", r"\1²", text)
     text = text.replace("/", "⁄")
     return text
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image bhejo (Hindi ya English), main PPT bana dunga!")
+    await update.message.reply_text("📸 Image bhejo (Hindi/English), main SAME question ke sath PPT bana dunga!")
 
 # ================= IMAGE HANDLER =================
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,65 +52,94 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         img = Image.open(file_path).convert("L")
 
-        text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
+        # OCR
+        extracted_text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
 
         os.remove(file_path)
 
-        if not text.strip():
-            await update.message.reply_text("❌ OCR se text nahi mila")
+        if not extracted_text.strip():
+            await update.message.reply_text("❌ OCR me text nahi mila")
             return
 
-        await process_text(update, context, text)
+        await process_input(update, context, extracted_text)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Image Error: {str(e)}")
+        await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
 
-# ================= PROCESS TEXT =================
-async def process_text(update, context, text):
-    await update.message.reply_text("🤖 MCQ bana raha hu...")
+# ================= PROCESS =================
+async def process_input(update, context, user_text):
+    await update.message.reply_text("🤖 MCQ bana raha hu (same question)...")
 
     prompt = f"""
-STRICT INSTRUCTION:
+STRICT RULES (Follow 100%):
 
-- Agar input Hindi me hai → output Hindi me hi hona chahiye
-- Agar input English me hai → output English me hi hona chahiye
-- Kisi bhi condition me translation NA karo
+1. Question ko EXACT same rakho (ek bhi word change mat karo)
+2. Language same rakho (Hindi → Hindi, English → English)
+3. Sirf MCQ format me convert karo
+4. Agar options already hain → same use karo
+5. Agar options nahi hain → new options bana sakte ho
+6. Koi explanation nahi dena
+7. Question ko modify, short ya rewrite mat karo
 
-Sirf MCQ format do:
+FORMAT:
 
-Question
+Question (same as input)
 A)
 B)
 C)
 D)
 
 TEXT:
-{text}
+{user_text}
 """
 
     try:
         response = model.generate_content(prompt)
         data = clean_text(response.text)
 
-        prs = Presentation()
+    except Exception as e:
+        await update.message.reply_text(f"❌ GEMINI ERROR:\n{str(e)}")
+        return
 
-        for q in data.split("\n\n"):
-            lines = [format_math(x.strip()) for x in q.split("\n") if x.strip()]
+    # ===== PPT =====
+    try:
+        questions = [q.strip() for q in data.split("\n\n") if q.strip()]
+
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        for q in questions:
+            lines = [format_math(l.strip()) for l in q.split("\n") if l.strip()]
 
             if len(lines) < 2:
                 continue
 
             slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-            box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(5))
+            # background black
+            bg = slide.background.fill
+            bg.solid()
+            bg.fore_color.rgb = RGBColor(0, 0, 0)
+
+            box = slide.shapes.add_textbox(Inches(2), Inches(1), Inches(10), Inches(5))
             tf = box.text_frame
 
-            tf.text = lines[0]
+            # Question
+            p = tf.paragraphs[0]
+            p.text = lines[0]
+            p.font.size = Pt(32)
+            p.font.bold = True
+            p.font.color.rgb = RGBColor(255, 255, 0)
 
+            # Options
             for l in lines[1:]:
-                tf.add_paragraph().text = l
+                p = tf.add_paragraph()
+                p.text = l
+                p.font.size = Pt(26)
+                p.font.color.rgb = RGBColor(255, 255, 255)
 
-        file_name = "output.pptx"
+        file_name = "final.pptx"
         prs.save(file_name)
 
         with open(file_name, "rb") as f:
@@ -116,7 +148,7 @@ TEXT:
         os.remove(file_name)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ AI Error: {str(e)}")
+        await update.message.reply_text(f"❌ PPT ERROR:\n{str(e)}")
 
 # ================= MAIN =================
 def main():
