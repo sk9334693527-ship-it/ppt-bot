@@ -37,10 +37,10 @@ def format_math(text):
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📸 Image ya ✍️ Text bhejo\nMain SAME question ke sath PPT bana dunga 🎯"
+        "📸 Image ya ✍️ Text bhejo\nMain PPT bana dunga 🎯"
     )
 
-# ================= IMAGE =================
+# ================= IMAGE HANDLER =================
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho raha hai...")
 
@@ -51,9 +51,20 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = "input.jpg"
         await file.download_to_drive(file_path)
 
+        # ===== OCR IMPROVEMENT =====
         img = Image.open(file_path).convert("L")
 
-        extracted_text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
+        # contrast improve
+        img = img.point(lambda x: 0 if x < 140 else 255)
+
+        # resize (accuracy boost)
+        img = img.resize((img.width * 2, img.height * 2))
+
+        # OCR (Hindi + English)
+        extracted_text = pytesseract.image_to_string(
+            img,
+            config='--oem 3 --psm 6 -l eng+hin'
+        )
 
         os.remove(file_path)
 
@@ -61,33 +72,32 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ OCR me text nahi mila")
             return
 
+        # DEBUG: OCR preview
+        await update.message.reply_text("🧾 OCR TEXT:\n" + extracted_text[:500])
+
         await process_input(update, context, extracted_text)
 
     except Exception as e:
         await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
 
-# ================= TEXT =================
+# ================= TEXT HANDLER =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    await process_input(update, context, user_text)
+    await process_input(update, context, update.message.text)
 
 # ================= PROCESS =================
 async def process_input(update, context, user_text):
     await update.message.reply_text("🤖 MCQ bana raha hu...")
 
     prompt = f"""
-STRICT RULES (Follow 100%):
+TEXT ko MCQ me convert karo.
 
-1. Question ko EXACT same rakho (ek bhi word change mat karo)
-2. Language same rakho (Hindi → Hindi, English → English)
-3. Sirf MCQ format me convert karo
-4. Agar options already hain → same use karo
-5. Agar options nahi hain → new options bana sakte ho
-6. Koi explanation nahi dena
-7. Question ko modify ya rewrite mat karo
+RULES:
+- Question ko change mat karo
+- Same language rakho
+- Sirf format karo
+- No explanation
 
 FORMAT:
-
 Question
 A)
 B)
@@ -122,7 +132,7 @@ TEXT:
 
             slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-            # Background
+            # background black
             bg = slide.background.fill
             bg.solid()
             bg.fore_color.rgb = RGBColor(0, 0, 0)
