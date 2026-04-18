@@ -3,4 +3,4 @@ python-pptx
 google-generativeai
 groq
 Pillow
-pdf2image
+pdfplumber
