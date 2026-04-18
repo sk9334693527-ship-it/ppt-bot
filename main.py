@@ -44,6 +44,29 @@ def generate_ai(prompt, image=None):
         except:
             return ""
 
+# ===== HINDI FIX PROMPT =====
+FIX_PROMPT = """
+तुम एक हिंदी टेक्स्ट करेक्शन इंजन हो।
+
+RULES:
+1. केवल मात्रा (ा ि ी ु ू े ै ो ौ) सुधारो
+2. शब्द मत बदलो
+3. भाषा मत बदलो
+4. नया कुछ मत जोड़ो
+
+फिर उसे MCQ format में convert करो:
+
+FORMAT:
+
+प्रश्न
+A)
+B)
+C)
+D)
+
+TEXT:
+"""
+
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
@@ -51,7 +74,7 @@ async def make_ppt(update, questions):
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
         slide.shapes.title.text = "❌ No Data"
-        slide.placeholders[1].text = "Kuch bhi extract nahi hua"
+        slide.placeholders[1].text = "कुछ भी extract नहीं हुआ"
     else:
         for q in questions:
             lines = [l.strip() for l in q.split("\n") if l.strip()]
@@ -82,13 +105,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-
-    questions = re.split(r"\n\d+\.", text)
+    fixed = generate_ai(FIX_PROMPT + text)
+    questions = fixed.split("\n\n")
     await make_ppt(update, questions)
 
 # ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Processing image...")
+    await update.message.reply_text("📸 Image process ho rahi hai...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -98,9 +121,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     img = enhance_image(Image.open(path))
 
-    prompt = "Extract MCQ questions EXACTLY."
-    data = generate_ai(prompt, image=img)
-
+    data = generate_ai("Extract MCQ questions", image=img)
     os.remove(path)
 
     questions = data.split("\n\n")
@@ -119,7 +140,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prs_questions = []
 
     try:
-        # ===== TRY TEXT EXTRACTION =====
+        # ===== TEXT EXTRACTION =====
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages):
                 await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
@@ -127,17 +148,24 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = page.extract_text()
 
                 if text:
-                    qs = re.split(r"\n\d+\.", text)
-                    prs_questions.extend(qs)
+                    # large text safe
+                    if len(text) > 3000:
+                        text = text[:3000]
 
-        # ===== अगर text मिला → DONE =====
+                    fixed = generate_ai(FIX_PROMPT + text)
+
+                    if fixed:
+                        qs = fixed.split("\n\n")
+                        prs_questions.extend(qs)
+
+        # ===== अगर text मिला =====
         if prs_questions:
             os.remove(path)
             await make_ppt(update, prs_questions)
             return
 
         # ===== FALLBACK (SCANNED PDF) =====
-        await update.message.reply_text("⚠ Scanned PDF detected, AI use kar rahe hain...")
+        await update.message.reply_text("⚠ Scanned PDF detected... AI use ho raha hai")
 
         for i in range(1, 30):
             await update.message.reply_text(f"📄 Page {i} processing...")
@@ -149,6 +177,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             img = enhance_image(images[0])
 
             data = generate_ai("Extract MCQ questions", image=img)
+
             if data:
                 prs_questions.extend(data.split("\n\n"))
 
