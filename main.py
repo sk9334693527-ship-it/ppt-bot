@@ -22,25 +22,28 @@ def clean(text):
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — main PPT bana dunga")
+    await update.message.reply_text(
+        "📸 Image | ✍️ Text | 📄 PDF bhejo — main PPT bana dunga"
+    )
 
 # ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image process ho rahi hai...")
+    await update.message.reply_text("📸 Image AI se read ho rahi hai...")
 
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
+    try:
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
 
-    path = "img.jpg"
-    await file.download_to_drive(path)
+        path = "img.jpg"
+        await file.download_to_drive(path)
 
-    img = Image.open(path)
+        img = Image.open(path)
 
-    prompt = """
+        prompt = """
 Image me jo question hai use EXACT same likho.
 Language change mat karo.
 
-MCQ format me convert karo:
+Usko MCQ format me convert karo:
 
 Question
 A)
@@ -51,10 +54,15 @@ D)
 No explanation.
 """
 
-    response = model.generate_content([prompt, img])
-    os.remove(path)
+        response = model.generate_content([prompt, img])
+        data = clean(response.text)
 
-    await make_ppt(update, clean(response.text))
+        os.remove(path)
+
+        await make_ppt(update, data)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
 
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,10 +71,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✍️ Text process ho raha hai...")
 
     prompt = f"""
-Question ko EXACT same rakho.
-Language same rakho.
+STRICT RULES:
 
-MCQ format:
+1. Question ko EXACT same rakho
+2. Language same rakho
+3. Sirf MCQ format me convert karo
+4. No explanation
+
+FORMAT:
 
 Question
 A)
@@ -78,44 +90,63 @@ TEXT:
 {user_text}
 """
 
-    response = model.generate_content(prompt)
+    try:
+        response = model.generate_content(prompt)
+        data = clean(response.text)
 
-    await make_ppt(update, clean(response.text))
+        await make_ppt(update, data)
 
-# ===== PDF =====
+    except Exception as e:
+        await update.message.reply_text(f"❌ TEXT ERROR:\n{str(e)}")
+
+# ===== PDF (FIXED) =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
-    doc = update.message.document
-    file = await doc.get_file()
+    try:
+        doc = update.message.document
+        file = await doc.get_file()
 
-    path = "file.pdf"
-    await file.download_to_drive(path)
+        path = "file.pdf"
+        await file.download_to_drive(path)
 
-    text = ""
+        raw_text = ""
 
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() + "\n"
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    raw_text += t + "\n"
 
-    os.remove(path)
+        os.remove(path)
 
-    if not text.strip():
-        await update.message.reply_text("❌ PDF se text nahi mila")
-        return
+        if not raw_text.strip():
+            await update.message.reply_text("❌ PDF se text nahi mila")
+            return
 
-    # limit (AI crash avoid)
-    text = text[:8000]
+        # ===== CLEAN TEXT =====
+        text = raw_text
 
-    prompt = f"""
-Is text me se MCQ questions nikaalo.
+        text = re.sub(r'\n+', '\n', text)
+        text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
 
-RULES:
-- Question same rakho
-- Language same rakho
-- Sirf MCQ format
+        text = text[:12000]
+
+        await update.message.reply_text("🤖 Questions detect kar raha hu...")
+
+        prompt = f"""
+Niche diye gaye text me se MCQ questions identify karo.
+
+STRICT RULES:
+1. Question SAME rakho
+2. Language SAME rakho
+3. Random text ignore karo
+4. MCQ format me do
+5. No explanation
 
 FORMAT:
+
 Question
 A)
 B)
@@ -126,9 +157,13 @@ TEXT:
 {text}
 """
 
-    response = model.generate_content(prompt)
+        response = model.generate_content(prompt)
+        data = clean(response.text)
 
-    await make_ppt(update, clean(response.text))
+        await make_ppt(update, data)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ PDF ERROR:\n{str(e)}")
 
 # ===== PPT =====
 async def make_ppt(update, data):
@@ -136,6 +171,7 @@ async def make_ppt(update, data):
 
     for block in data.split("\n\n"):
         lines = [l.strip() for l in block.split("\n") if l.strip()]
+
         if len(lines) < 2:
             continue
 
