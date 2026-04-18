@@ -1,16 +1,12 @@
-FROM python:3.10-slim
+FROM python:3.10
 
-# Install only required dependency
-RUN apt-get update && apt-get install -y poppler-utils \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-hin \
+    poppler-utils
 
 WORKDIR /app
-
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
+RUN pip install --no-cache-dir -r requirements.txt
 
 CMD ["python", "main.py"]
