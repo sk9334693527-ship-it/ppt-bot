@@ -1,6 +1,7 @@
 import os
 import re
 import google.generativeai as genai
+from groq import Groq
 from PIL import Image
 from pdf2image import convert_from_path
 
@@ -11,14 +12,41 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ===== CLEAN =====
 def clean(text):
     text = re.sub(r"\*\*", "", text)
     return text.strip()
+
+# ===== AI FALLBACK =====
+def generate_ai(prompt, image=None):
+    # ===== GEMINI =====
+    try:
+        if image:
+            res = gemini_model.generate_content([prompt, image])
+        else:
+            res = gemini_model.generate_content(prompt)
+        return res.text
+    except Exception as e:
+        print("Gemini failed:", e)
+
+    # ===== GROQ =====
+    try:
+        chat = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-70b-8192"
+        )
+        return chat.choices[0].message.content
+    except Exception as e:
+        print("Groq failed:", e)
+
+    return "❌ AI Failed"
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,42 +71,32 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Image me jo question hai use EXACT same likho.
 Language change mat karo.
 
-Usko MCQ format me convert karo:
+MCQ format:
 
 Question
 A)
 B)
 C)
 D)
-
-No explanation.
 """
 
-        response = model.generate_content([prompt, img])
-        data = clean(response.text)
-
+        data = generate_ai(prompt, image=img)
         os.remove(path)
 
-        await make_ppt(update, data)
+        await make_ppt(update, clean(data))
 
     except Exception as e:
         await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
 
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-
     await update.message.reply_text("✍️ Text process ho raha hai...")
 
     prompt = f"""
-STRICT RULES:
+Question ko EXACT same rakho.
+Language same rakho.
 
-1. Question ko EXACT same rakho
-2. Language same rakho
-3. Sirf MCQ format me convert karo
-4. No explanation
-
-FORMAT:
+MCQ format:
 
 Question
 A)
@@ -87,21 +105,15 @@ C)
 D)
 
 TEXT:
-{user_text}
+{update.message.text}
 """
 
-    try:
-        response = model.generate_content(prompt)
-        data = clean(response.text)
+    data = generate_ai(prompt)
+    await make_ppt(update, clean(data))
 
-        await make_ppt(update, data)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ TEXT ERROR:\n{str(e)}")
-
-# ===== PDF (LARGE SAFE VERSION) =====
+# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 PDF process ho raha hai... ⏳")
+    await update.message.reply_text("📄 PDF process ho raha hai...")
 
     try:
         doc = update.message.document
@@ -110,52 +122,36 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         path = "file.pdf"
         await file.download_to_drive(path)
 
-        # convert PDF → images (LOW DPI for memory safety)
         images = convert_from_path(path, dpi=150)
-
         os.remove(path)
 
-        total_pages = len(images)
+        total = len(images)
 
-        # SAFETY LIMIT
-        if total_pages > 50:
-            await update.message.reply_text("❌ PDF bahut bada hai (max 50 pages allowed)")
+        if total > 50:
+            await update.message.reply_text("❌ Max 50 pages allowed")
             return
-
-        await update.message.reply_text(f"📊 Total pages: {total_pages}")
 
         prs = Presentation()
 
-        batch_size = 2  # VERY IMPORTANT (memory safe)
+        batch_size = 2
 
-        for i in range(0, total_pages, batch_size):
+        for i in range(0, total, batch_size):
             batch = images[i:i+batch_size]
-
-            await update.message.reply_text(f"⚙️ Pages {i+1} to {i+len(batch)} process ho rahe hain...")
+            await update.message.reply_text(f"⚙️ Pages {i+1}-{i+len(batch)}")
 
             for img in batch:
                 prompt = """
-Is image me jo MCQ questions hain unhe EXACT same likho.
-
-RULES:
-- Question change mat karo
-- Language same rakho
-- Sirf MCQ format
-- No explanation
+MCQ questions EXACT same likho.
 
 FORMAT:
-
 Question
 A)
 B)
 C)
 D)
 """
+                data = generate_ai(prompt, image=img)
 
-                response = model.generate_content([prompt, img])
-                data = response.text
-
-                # ===== ADD TO PPT =====
                 for block in data.split("\n\n"):
                     lines = [l.strip() for l in block.split("\n") if l.strip()]
                     if len(lines) < 2:
@@ -178,18 +174,15 @@ D)
 
         os.remove(file_name)
 
-        await update.message.reply_text("✅ PDF convert ho gaya!")
-
     except Exception as e:
         await update.message.reply_text(f"❌ PDF ERROR:\n{str(e)}")
 
-# ===== PPT FUNCTION =====
+# ===== PPT =====
 async def make_ppt(update, data):
     prs = Presentation()
 
     for block in data.split("\n\n"):
         lines = [l.strip() for l in block.split("\n") if l.strip()]
-
         if len(lines) < 2:
             continue
 
