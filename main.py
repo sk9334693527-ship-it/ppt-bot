@@ -1,5 +1,6 @@
 import os
 import re
+import pdfplumber
 import google.generativeai as genai
 from groq import Groq
 from PIL import Image, ImageEnhance, ImageFilter
@@ -18,44 +19,12 @@ genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# ===== CLEAN =====
-def clean(text):
-    text = re.sub(r"\*\*", "", text)
-    text = text.replace("\n\n\n", "\n\n")
-    return text.strip()
-
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
-
-# ===== PROMPTS =====
-STRICT_PROMPT = """
-You are an OCR engine.
-Copy text EXACTLY.
-Extract MCQ.
-
-FORMAT:
-Question
-A)
-B)
-C)
-D)
-"""
-
-RELAX_PROMPT = """
-Extract MCQ from image.
-Keep same language.
-
-FORMAT:
-Question
-A)
-B)
-C)
-D)
-"""
 
 # ===== AI =====
 def generate_ai(prompt, image=None):
@@ -75,124 +44,22 @@ def generate_ai(prompt, image=None):
         except:
             return ""
 
-# ===== START =====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
-
-# ===== IMAGE =====
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Processing image...")
-
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
-
-    path = "img.jpg"
-    await file.download_to_drive(path)
-
-    img = enhance_image(Image.open(path))
-    data = generate_ai(STRICT_PROMPT, image=img)
-
-    if not data or len(data.strip()) < 20:
-        data = generate_ai(RELAX_PROMPT, image=img)
-
-    os.remove(path)
-
-    await make_ppt(update, clean(data))
-
-# ===== TEXT =====
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = f"Convert into MCQ:\n{update.message.text}"
-    data = generate_ai(prompt)
-    await make_ppt(update, clean(data))
-
-# ===== PDF (PAGE-BY-PAGE SAFE) =====
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 PDF process ho raha hai...")
-
-    doc = update.message.document
-    file = await doc.get_file()
-
-    path = "file.pdf"
-    await file.download_to_drive(path)
-
-    prs = Presentation()
-
-    max_pages = 30
-
-    for i in range(1, max_pages + 1):
-        try:
-            await update.message.reply_text(f"📄 Page {i} processing...")
-
-            images = convert_from_path(
-                path,
-                dpi=220,
-                first_page=i,
-                last_page=i
-            )
-
-            if not images:
-                break
-
-            img = images[0]
-            img = enhance_image(img)
-
-            w, h = img.size
-            img = img.crop((0, 0, w, int(h * 0.7)))
-
-            data = generate_ai(STRICT_PROMPT, image=img)
-
-            if not data or len(data.strip()) < 20:
-                data = generate_ai(RELAX_PROMPT, image=img)
-
-            print("AI OUTPUT:", data[:200])
-
-            if not data:
-                continue
-
-            for block in data.split("\n\n"):
-                lines = [l.strip() for l in block.split("\n") if l.strip()]
-                if len(lines) < 2:
-                    continue
-
-                slide = prs.slides.add_slide(prs.slide_layouts[1])
-                slide.shapes.title.text = lines[0]
-
-                tf = slide.placeholders[1].text_frame
-                tf.text = ""
-
-                for l in lines[1:]:
-                    tf.add_paragraph().text = l
-
-        except Exception as e:
-            print("Page error:", e)
-            continue
-
-    os.remove(path)
-
-    file_name = "output.pptx"
-    prs.save(file_name)
-
-    with open(file_name, "rb") as f:
-        await update.message.reply_document(InputFile(f))
-
-    os.remove(file_name)
-
 # ===== PPT =====
-async def make_ppt(update, data):
+async def make_ppt(update, questions):
     prs = Presentation()
 
-    if not data:
+    if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
         slide.shapes.title.text = "❌ No Data"
-        slide.placeholders[1].text = "AI failed"
+        slide.placeholders[1].text = "Kuch bhi extract nahi hua"
     else:
-        for block in data.split("\n\n"):
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
-            if len(lines) < 2:
+        for q in questions:
+            lines = [l.strip() for l in q.split("\n") if l.strip()]
+            if not lines:
                 continue
 
             slide = prs.slides.add_slide(prs.slide_layouts[1])
-            slide.shapes.title.text = lines[0]
+            slide.shapes.title.text = lines[0][:200]
 
             tf = slide.placeholders[1].text_frame
             tf.text = ""
@@ -208,13 +75,97 @@ async def make_ppt(update, data):
 
     os.remove(file)
 
+# ===== START =====
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
+
+# ===== TEXT =====
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    questions = re.split(r"\n\d+\.", text)
+    await make_ppt(update, questions)
+
+# ===== IMAGE =====
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📸 Processing image...")
+
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+
+    path = "img.jpg"
+    await file.download_to_drive(path)
+
+    img = enhance_image(Image.open(path))
+
+    prompt = "Extract MCQ questions EXACTLY."
+    data = generate_ai(prompt, image=img)
+
+    os.remove(path)
+
+    questions = data.split("\n\n")
+    await make_ppt(update, questions)
+
+# ===== PDF =====
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📄 PDF process ho raha hai...")
+
+    doc = update.message.document
+    file = await doc.get_file()
+
+    path = "file.pdf"
+    await file.download_to_drive(path)
+
+    prs_questions = []
+
+    try:
+        # ===== TRY TEXT EXTRACTION =====
+        with pdfplumber.open(path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
+
+                text = page.extract_text()
+
+                if text:
+                    qs = re.split(r"\n\d+\.", text)
+                    prs_questions.extend(qs)
+
+        # ===== अगर text मिला → DONE =====
+        if prs_questions:
+            os.remove(path)
+            await make_ppt(update, prs_questions)
+            return
+
+        # ===== FALLBACK (SCANNED PDF) =====
+        await update.message.reply_text("⚠ Scanned PDF detected, AI use kar rahe hain...")
+
+        for i in range(1, 30):
+            await update.message.reply_text(f"📄 Page {i} processing...")
+
+            images = convert_from_path(path, dpi=220, first_page=i, last_page=i)
+            if not images:
+                break
+
+            img = enhance_image(images[0])
+
+            data = generate_ai("Extract MCQ questions", image=img)
+            if data:
+                prs_questions.extend(data.split("\n\n"))
+
+        os.remove(path)
+        await make_ppt(update, prs_questions)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ ERROR: {str(e)}")
+        os.remove(path)
+
 # ===== MAIN =====
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
     print("🚀 Bot running...")
