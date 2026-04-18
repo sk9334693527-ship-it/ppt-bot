@@ -1,11 +1,10 @@
 import os
 import re
+import pdfplumber
 import google.generativeai as genai
 from PIL import Image
 
 from pptx import Presentation
-from pptx.util import Inches
-
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -23,26 +22,25 @@ def clean(text):
 
 # ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image ya ✍️ Text bhejo — main PPT bana dunga")
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — main PPT bana dunga")
 
 # ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
-    try:
-        photo = update.message.photo[-1]
-        file = await photo.get_file()
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
 
-        path = "img.jpg"
-        await file.download_to_drive(path)
+    path = "img.jpg"
+    await file.download_to_drive(path)
 
-        img = Image.open(path)
+    img = Image.open(path)
 
-        prompt = """
+    prompt = """
 Image me jo question hai use EXACT same likho.
 Language change mat karo.
 
-Usko MCQ format me convert karo:
+MCQ format me convert karo:
 
 Question
 A)
@@ -53,31 +51,22 @@ D)
 No explanation.
 """
 
-        response = model.generate_content([prompt, img])
-        data = clean(response.text)
+    response = model.generate_content([prompt, img])
+    os.remove(path)
 
-        os.remove(path)
+    await make_ppt(update, clean(response.text))
 
-        await make_ppt(update, data)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-
-# ===== TEXT (NEW FEATURE) =====
+# ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
-    await update.message.reply_text("✍️ Text se MCQ bana raha hu...")
+    await update.message.reply_text("✍️ Text process ho raha hai...")
 
     prompt = f"""
-STRICT RULES:
+Question ko EXACT same rakho.
+Language same rakho.
 
-1. Question ko EXACT same rakho (ek bhi word change mat karo)
-2. Language same rakho
-3. Sirf MCQ format me convert karo
-4. No explanation
-
-FORMAT:
+MCQ format:
 
 Question
 A)
@@ -89,14 +78,57 @@ TEXT:
 {user_text}
 """
 
-    try:
-        response = model.generate_content(prompt)
-        data = clean(response.text)
+    response = model.generate_content(prompt)
 
-        await make_ppt(update, data)
+    await make_ppt(update, clean(response.text))
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+# ===== PDF =====
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📄 PDF process ho raha hai...")
+
+    doc = update.message.document
+    file = await doc.get_file()
+
+    path = "file.pdf"
+    await file.download_to_drive(path)
+
+    text = ""
+
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+
+    os.remove(path)
+
+    if not text.strip():
+        await update.message.reply_text("❌ PDF se text nahi mila")
+        return
+
+    # limit (AI crash avoid)
+    text = text[:8000]
+
+    prompt = f"""
+Is text me se MCQ questions nikaalo.
+
+RULES:
+- Question same rakho
+- Language same rakho
+- Sirf MCQ format
+
+FORMAT:
+Question
+A)
+B)
+C)
+D)
+
+TEXT:
+{text}
+"""
+
+    response = model.generate_content(prompt)
+
+    await make_ppt(update, clean(response.text))
 
 # ===== PPT =====
 async def make_ppt(update, data):
@@ -116,7 +148,7 @@ async def make_ppt(update, data):
         for l in lines[1:]:
             tf.add_paragraph().text = l
 
-    file = "out.pptx"
+    file = "output.pptx"
     prs.save(file)
 
     with open(file, "rb") as f:
@@ -131,6 +163,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
     print("🚀 Bot running...")
     app.run_polling()
