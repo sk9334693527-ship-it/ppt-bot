@@ -18,7 +18,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# Railway OCR path
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 # ================= CLEAN =================
@@ -37,9 +36,11 @@ def format_math(text):
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image bhejo (Hindi/English), main SAME question ke sath PPT bana dunga!")
+    await update.message.reply_text(
+        "📸 Image ya ✍️ Text bhejo\nMain SAME question ke sath PPT bana dunga 🎯"
+    )
 
-# ================= IMAGE HANDLER =================
+# ================= IMAGE =================
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho raha hai...")
 
@@ -52,7 +53,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         img = Image.open(file_path).convert("L")
 
-        # OCR
         extracted_text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
 
         os.remove(file_path)
@@ -66,9 +66,14 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ IMAGE ERROR:\n{str(e)}")
 
+# ================= TEXT =================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    await process_input(update, context, user_text)
+
 # ================= PROCESS =================
 async def process_input(update, context, user_text):
-    await update.message.reply_text("🤖 MCQ bana raha hu (same question)...")
+    await update.message.reply_text("🤖 MCQ bana raha hu...")
 
     prompt = f"""
 STRICT RULES (Follow 100%):
@@ -79,11 +84,11 @@ STRICT RULES (Follow 100%):
 4. Agar options already hain → same use karo
 5. Agar options nahi hain → new options bana sakte ho
 6. Koi explanation nahi dena
-7. Question ko modify, short ya rewrite mat karo
+7. Question ko modify ya rewrite mat karo
 
 FORMAT:
 
-Question (same as input)
+Question
 A)
 B)
 C)
@@ -117,7 +122,7 @@ TEXT:
 
             slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-            # background black
+            # Background
             bg = slide.background.fill
             bg.solid()
             bg.fore_color.rgb = RGBColor(0, 0, 0)
@@ -156,6 +161,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🚀 Bot running...")
     app.run_polling()
