@@ -3,3 +3,4 @@ python-pptx
 google-generativeai
 Pillow
 pytesseract
+pdfplumber
