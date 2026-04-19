@@ -111,10 +111,15 @@ async def make_ppt(update, questions):
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
-    def style(p):
+    def style_question(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 255)
+            run.font.color.rgb = RGBColor(255, 255, 0)  # Yellow
+
+    def style_option(p):
+        for run in p.runs:
+            run.font.size = Pt(24)
+            run.font.color.rgb = RGBColor(255, 255, 255)  # White
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -126,7 +131,7 @@ async def make_ppt(update, questions):
 
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
-        style(p)
+        style_question(p)
 
     else:
         for i, q in enumerate(questions, start=1):
@@ -148,23 +153,25 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
-            # ✅ FIXED: Only remove "प्रश्न", keep numbers
+            # Clean question (only remove "प्रश्न")
             question_text = lines[0]
             question_text = re.sub(r"^प्रश्न\s*", "", question_text)
 
             # Add numbering
             question_text = f"{i}. {question_text}"
 
+            # QUESTION
             p = tf.paragraphs[0]
             p.text = question_text
-            style(p)
+            style_question(p)
 
             tf.add_paragraph().text = ""
 
+            # OPTIONS
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
-                style(p)
+                style_option(p)
 
     file = "output.pptx"
     prs.save(file)
