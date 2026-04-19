@@ -15,6 +15,10 @@ from pptx.enum.text import MSO_AUTO_SIZE
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+# ✅ NEW (PDF)
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import landscape, A4
+
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -94,6 +98,43 @@ D)
 TEXT:
 """
 
+# ===== PDF =====
+def make_pdf(questions):
+    file = "output.pdf"
+
+    c = canvas.Canvas(file, pagesize=landscape(A4))
+    width, height = landscape(A4)
+
+    if not questions:
+        c.setFont("Helvetica-Bold", 30)
+        c.drawString(100, height // 2, "No Data")
+        c.save()
+        return file
+
+    for i, q in enumerate(questions, start=1):
+        lines = [l.strip() for l in q.split("\n") if l.strip()]
+        if not lines:
+            continue
+
+        y = height - 80
+
+        question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
+        question_text = f"{i}. {question_text}"
+
+        c.setFont("Helvetica-Bold", 20)
+        c.drawString(50, y, question_text)
+        y -= 40
+
+        c.setFont("Helvetica", 18)
+        for opt in lines[1:]:
+            c.drawString(70, y, opt)
+            y -= 30
+
+        c.showPage()
+
+    c.save()
+    return file
+
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
@@ -114,12 +155,12 @@ async def make_ppt(update, questions):
     def style_question(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 0)  # Yellow
+            run.font.color.rgb = RGBColor(255, 255, 0)
 
     def style_option(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 255)  # White
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -142,48 +183,44 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            box = slide.shapes.add_textbox(
-                Inches(3.5),
-                Inches(1),
-                Inches(9),
-                Inches(5)
-            )
-
+            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
             tf = box.text_frame
             tf.clear()
             setup_tf(tf)
 
-            # Clean question (only remove "प्रश्न")
-            question_text = lines[0]
-            question_text = re.sub(r"^प्रश्न\s*", "", question_text)
-
-            # Add numbering
+            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
             question_text = f"{i}. {question_text}"
 
-            # QUESTION
             p = tf.paragraphs[0]
             p.text = question_text
             style_question(p)
 
             tf.add_paragraph().text = ""
 
-            # OPTIONS
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
                 style_option(p)
 
-    file = "output.pptx"
-    prs.save(file)
+    ppt_file = "output.pptx"
+    prs.save(ppt_file)
 
-    with open(file, "rb") as f:
+    pdf_file = make_pdf(questions)
+
+    # Send PPT
+    with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    os.remove(file)
+    # Send PDF
+    with open(pdf_file, "rb") as f:
+        await update.message.reply_document(InputFile(f))
+
+    os.remove(ppt_file)
+    os.remove(pdf_file)
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
