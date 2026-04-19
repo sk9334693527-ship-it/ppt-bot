@@ -42,24 +42,24 @@ def generate_ai(prompt):
         except:
             return ""
 
-# ===== HINDI FIX =====
+# ===== PROMPT =====
 FIX_PROMPT = """
-तुम एक हिंदी टेक्स्ट करेक्शन इंजन हो।
+तुम एक हिंदी MCQ generator हो।
 
-RULES:
-1. केवल मात्रा सुधारो (ा ि ी ु ू े ै ो ौ)
-2. शब्द मत बदलो
-3. भाषा मत बदलो
-4. नया कुछ मत जोड़ो
+काम:
+1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
+2. मात्रा की गलती सुधारो
+3. प्रश्न का अर्थ मत बदलो
+4. MCQ format में बदलो
 
-फिर MCQ format में बदलो:
-
-FORMAT:
-प्रश्न
+FORMAT STRICT:
+प्रश्न ...
 A)
 B)
 C)
 D)
+
+कोई extra text नहीं देना।
 
 TEXT:
 """
@@ -103,7 +103,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     fixed = generate_ai(FIX_PROMPT + text)
-    questions = fixed.split("\n\n")
+
+    if not fixed:
+        await update.message.reply_text("❌ AI fail ho gaya")
+        return
+
+    questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
 # ===== IMAGE =====
@@ -117,17 +122,20 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     img = enhance_image(Image.open(path))
-
     text = pytesseract.image_to_string(img, lang="hin+eng")
 
     fixed = generate_ai(FIX_PROMPT + text)
 
     os.remove(path)
 
-    questions = fixed.split("\n\n")
+    if not fixed:
+        await update.message.reply_text("❌ AI fail ho gaya")
+        return
+
+    questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
-# ===== PDF =====
+# ===== PDF (UPDATED FULL TEXT AI) =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
@@ -137,23 +145,29 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    questions = []
-
     try:
-        # ===== TEXT PDF =====
+        all_text = ""
+
+        # ===== TRY TEXT EXTRACTION =====
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages):
                 await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
-
                 text = page.extract_text()
+                if text:
+                    all_text += text + "\n"
 
-                if text and len(text.strip()) > 20:
-                    fixed = generate_ai(FIX_PROMPT + text)
-                    if fixed:
-                        questions.extend(fixed.split("\n\n"))
+        # ===== IF TEXT FOUND =====
+        if len(all_text.strip()) > 50:
+            await update.message.reply_text("🧠 AI full PDF process kar raha hai...")
 
-        # ===== अगर मिला =====
-        if questions:
+            fixed = generate_ai(FIX_PROMPT + all_text)
+
+            if not fixed:
+                await update.message.reply_text("❌ AI fail ho gaya")
+                return
+
+            questions = re.split(r"\n(?=प्रश्न)", fixed)
+
             os.remove(path)
             await make_ppt(update, questions)
             return
@@ -161,7 +175,9 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ===== OCR FALLBACK =====
         await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
 
-        for i in range(1, 30):
+        all_text = ""
+
+        for i in range(1, 50):
             await update.message.reply_text(f"📄 Page {i} OCR...")
 
             images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
@@ -169,25 +185,34 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
             img = enhance_image(images[0])
-
             text = pytesseract.image_to_string(img, lang="hin+eng")
 
-            if text and len(text.strip()) > 20:
-                fixed = generate_ai(FIX_PROMPT + text)
-                if fixed:
-                    questions.extend(fixed.split("\n\n"))
+            if text:
+                all_text += text + "\n"
 
-        os.remove(path)
-
-        if not questions:
-            await update.message.reply_text("❌ Kuch bhi extract nahi ho paya (PDF quality low hai)")
+        if len(all_text.strip()) < 20:
+            await update.message.reply_text("❌ Kuch bhi extract nahi ho paya")
+            os.remove(path)
             return
 
+        await update.message.reply_text("🧠 OCR text AI ko bheja ja raha hai...")
+
+        fixed = generate_ai(FIX_PROMPT + all_text)
+
+        if not fixed:
+            await update.message.reply_text("❌ AI fail ho gaya")
+            os.remove(path)
+            return
+
+        questions = re.split(r"\n(?=प्रश्न)", fixed)
+
+        os.remove(path)
         await make_ppt(update, questions)
 
     except Exception as e:
         await update.message.reply_text(f"❌ ERROR: {str(e)}")
-        os.remove(path)
+        if os.path.exists(path):
+            os.remove(path)
 
 # ===== MAIN =====
 def main():
