@@ -3,7 +3,6 @@ import re
 import time
 import pdfplumber
 import pytesseract
-import google.generativeai as genai
 from groq import Groq
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
@@ -30,8 +29,6 @@ def load_keys(prefix, max_keys=15):
 
 # ===== CONFIG =====
 BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
-
-GEMINI_KEYS = load_keys("GEMINI_API_KEY")
 GROQ_KEYS = load_keys("GROQ_API_KEY")
 
 # ===== KEY MANAGER =====
@@ -61,7 +58,6 @@ class KeyManager:
         self.sleep_map[key] = time.time() + 3600
         self.index = (self.index + 1) % len(self.keys)
 
-gemini_manager = KeyManager(GEMINI_KEYS)
 groq_manager = KeyManager(GROQ_KEYS)
 
 # ===== IMAGE ENHANCE =====
@@ -71,92 +67,69 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== GROQ SAFE CALL =====
-def call_groq(prompt, key):
-    try:
-        client = Groq(api_key=key)
-
-        chat = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192"
-        )
-
-        print("Groq RAW:", chat)
-
-        if not chat or not chat.choices:
-            return None
-
-        choice = chat.choices[0]
-
-        if not choice.message:
-            return None
-
-        content = choice.message.content
-
-        if not content or len(content.strip()) < 5:
-            return None
-
-        return content
-
-    except Exception as e:
-        print("Groq ERROR:", str(e))
-        return None
-
-# ===== AI =====
-def generate_ai(prompt):
-
-    print("Gemini Keys:", GEMINI_KEYS)
-    print("Groq Keys:", GROQ_KEYS)
-
-    # ===== GEMINI FIRST =====
-    for _ in range(len(GEMINI_KEYS)):
-        key = gemini_manager.get_key()
+# ===== GROQ CALL =====
+def call_groq(prompt):
+    for _ in range(len(GROQ_KEYS)):
+        key = groq_manager.get_key()
         if not key:
             break
 
         try:
-            print("Using Gemini:", key[:10])
+            print("Using Groq:", key[:10])
 
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
+            client = Groq(api_key=key)
 
-            res = model.generate_content(prompt)
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama3-8b-8192"
+            )
 
-            if res and res.text:
-                return res.text
+            if not chat or not chat.choices:
+                groq_manager.mark_failed(key)
+                continue
+
+            content = chat.choices[0].message.content
+
+            if not content or len(content.strip()) < 5:
+                groq_manager.mark_failed(key)
+                continue
+
+            return content
 
         except Exception as e:
-            print("Gemini ERROR:", str(e))
-            gemini_manager.mark_failed(key)
-
-    # ===== GROQ =====
-    for _ in range(len(GROQ_KEYS)):
-        key = groq_manager.get_key()
-
-        if not key:
-            break
-
-        print("Using Groq:", key[:10])
-
-        result = call_groq(prompt, key)
-
-        if result:
-            return result
-        else:
+            print("Groq ERROR:", e)
             groq_manager.mark_failed(key)
 
-    print("❌ All AI failed")
     return ""
 
-# ===== PROMPT =====
-FIX_PROMPT = """
-तुम एक हिंदी MCQ generator हो।
+# ===== 2 STEP AI =====
+def process_text(text):
 
-काम:
-1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
-2. मात्रा सुधारो
-3. अर्थ वही रखो
-4. MCQ format बनाओ
+    # STEP 1: CLEAN TEXT
+    clean_prompt = f"""
+टेक्स्ट साफ करो:
+- spelling ठीक करो
+- extra line हटाओ
+- readable बनाओ
+- कुछ नया मत जोड़ो
+
+TEXT:
+{text}
+"""
+
+    cleaned = call_groq(clean_prompt)
+
+    if not cleaned:
+        return None
+
+    # STEP 2: MCQ
+    mcq_prompt = f"""
+नीचे दिए गए टेक्स्ट से MCQ बनाओ
+
+RULE:
+- सिर्फ प्रश्न निकालो
+- खुद से answer मत बनाओ
+- format strict रखो
 
 FORMAT:
 प्रश्न ...
@@ -166,30 +139,30 @@ C)
 D)
 
 TEXT:
+{cleaned}
 """
+
+    final = call_groq(mcq_prompt)
+
+    return final
 
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
-    if not questions:
+    for q in questions:
+        lines = [l.strip() for l in q.split("\n") if l.strip()]
+        if not lines:
+            continue
+
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = "❌ No Data"
-        slide.placeholders[1].text = "कुछ नहीं मिला"
-    else:
-        for q in questions:
-            lines = [l.strip() for l in q.split("\n") if l.strip()]
-            if not lines:
-                continue
+        slide.shapes.title.text = lines[0][:200]
 
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
-            slide.shapes.title.text = lines[0][:200]
+        tf = slide.placeholders[1].text_frame
+        tf.text = ""
 
-            tf = slide.placeholders[1].text_frame
-            tf.text = ""
-
-            for l in lines[1:]:
-                tf.add_paragraph().text = l
+        for l in lines[1:]:
+            tf.add_paragraph().text = l
 
     file = "output.pptx"
     prs.save(file)
@@ -204,13 +177,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fixed = generate_ai(FIX_PROMPT + update.message.text)
+    text = update.message.text
 
-    if not fixed:
+    result = process_text(text)
+
+    if not result:
         await update.message.reply_text("❌ AI failed")
         return
 
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
+    questions = re.split(r"\n(?=प्रश्न)", result)
     await make_ppt(update, questions)
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,17 +202,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     os.remove(path)
 
-    if not text:
-        await update.message.reply_text("❌ OCR fail")
-        return
+    result = process_text(text)
 
-    fixed = generate_ai(FIX_PROMPT + text)
-
-    if not fixed:
+    if not result:
         await update.message.reply_text("❌ AI failed")
         return
 
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
+    questions = re.split(r"\n(?=प्रश्न)", result)
     await make_ppt(update, questions)
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -269,17 +240,13 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         os.remove(path)
 
-        if not all_text:
-            await update.message.reply_text("❌ No text")
-            return
+        result = process_text(all_text)
 
-        fixed = generate_ai(FIX_PROMPT + all_text)
-
-        if not fixed:
+        if not result:
             await update.message.reply_text("❌ AI failed")
             return
 
-        questions = re.split(r"\n(?=प्रश्न)", fixed)
+        questions = re.split(r"\n(?=प्रश्न)", result)
         await make_ppt(update, questions)
 
     except Exception as e:
@@ -287,11 +254,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== MAIN =====
 def main():
-    print("🚀 Bot starting...")
-
-    if not BOT_TOKEN:
-        print("❌ BOT_TOKEN missing")
-        return
+    print("🚀 Bot running...")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
