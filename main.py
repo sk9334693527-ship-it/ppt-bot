@@ -10,6 +10,7 @@ from pdf2image import convert_from_path
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+from pptx.enum.text import MSO_AUTO_SIZE
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -32,17 +33,17 @@ GROQ_KEYS = [
     os.getenv("GROQ_API_KEY2"),
 ]
 
-# Remove empty keys
+# Clean keys
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Initialize Gemini models
+# Gemini models
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Initialize Groq clients
+# Groq clients
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 # ===== IMAGE ENHANCE =====
@@ -54,7 +55,6 @@ def enhance_image(img):
 
 # ===== AI =====
 def generate_ai(prompt):
-    # Gemini fallback
     for model in gemini_models:
         try:
             res = model.generate_content(prompt)
@@ -63,7 +63,6 @@ def generate_ai(prompt):
         except:
             continue
 
-    # Groq fallback
     for client in groq_clients:
         try:
             chat = client.chat.completions.create(
@@ -98,11 +97,10 @@ D)
 TEXT:
 """
 
-# ===== PPT (SINGLE BOX LAYOUT) =====
+# ===== PPT FINAL FIX =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
-    # 16:9 ratio
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -112,8 +110,12 @@ async def make_ppt(update, questions):
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    def style_paragraph(paragraph, size, bold=False):
-        for run in paragraph.runs:
+    def setup_tf(tf):
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+    def style(p, size, bold=False):
+        for run in p.runs:
             run.font.size = Pt(size)
             run.font.bold = bold
             run.font.color.rgb = RGBColor(255, 255, 255)
@@ -124,9 +126,11 @@ async def make_ppt(update, questions):
 
         box = slide.shapes.add_textbox(Inches(4), Inches(3), Inches(6), Inches(1))
         tf = box.text_frame
+        setup_tf(tf)
+
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
-        style_paragraph(p, 36, True)
+        style(p, 36, True)
 
     else:
         for q in questions:
@@ -137,10 +141,8 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            # LEFT SPACE (~30%)
             left_margin = Inches(4)
 
-            # SINGLE BOX (question + options)
             box = slide.shapes.add_textbox(
                 left_margin,
                 Inches(1),
@@ -150,21 +152,19 @@ async def make_ppt(update, questions):
 
             tf = box.text_frame
             tf.clear()
+            setup_tf(tf)
 
-            # Question
             p = tf.paragraphs[0]
             p.text = lines[0]
-            style_paragraph(p, 36, True)
+            style(p, 36, True)
 
-            # Space
             space = tf.add_paragraph()
             space.text = ""
 
-            # Options
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
-                style_paragraph(p, 28)
+                style(p, 28)
 
     file = "output.pptx"
     prs.save(file)
@@ -174,14 +174,12 @@ async def make_ppt(update, questions):
 
     os.remove(file)
 
-# ===== START =====
+# ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
 
-# ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-
     fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
@@ -191,7 +189,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
-# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
@@ -210,8 +207,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Image se text sahi nahi nikla")
         return
 
-    await update.message.reply_text("🧠 AI pura text process kar raha hai...")
-
     fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
@@ -221,7 +216,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
-# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
@@ -235,55 +229,28 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_text = ""
 
         with pdfplumber.open(path) as pdf:
-            for i, page in enumerate(pdf.pages):
-                await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
+            for page in pdf.pages:
                 text = page.extract_text()
                 if text:
                     all_text += text + "\n"
 
         if len(all_text.strip()) > 50:
-            await update.message.reply_text("🧠 AI full PDF process kar raha hai...")
+            fixed = generate_ai(FIX_PROMPT + all_text)
+        else:
+            all_text = ""
+            for i in range(1, 50):
+                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                if not images:
+                    break
+                img = enhance_image(images[0])
+                text = pytesseract.image_to_string(img, lang="hin+eng")
+                if text:
+                    all_text += text + "\n"
 
             fixed = generate_ai(FIX_PROMPT + all_text)
 
-            if not fixed:
-                await update.message.reply_text("❌ AI fail ho gaya")
-                return
-
-            questions = re.split(r"\n(?=प्रश्न)", fixed)
-
-            os.remove(path)
-            await make_ppt(update, questions)
-            return
-
-        await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
-
-        all_text = ""
-
-        for i in range(1, 50):
-            await update.message.reply_text(f"📄 Page {i} OCR...")
-
-            images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-            if not images:
-                break
-
-            img = enhance_image(images[0])
-            text = pytesseract.image_to_string(img, lang="hin+eng")
-
-            if text:
-                all_text += text + "\n"
-
-        if len(all_text.strip()) < 20:
-            await update.message.reply_text("❌ Kuch bhi extract nahi ho paya")
-            os.remove(path)
-            return
-
-        await update.message.reply_text("🧠 OCR text AI ko bheja ja रहा है...")
-
-        fixed = generate_ai(FIX_PROMPT + all_text)
-
         if not fixed:
-            await update.message.reply_text("❌ AI fail ho गया")
+            await update.message.reply_text("❌ AI fail ho gaya")
             os.remove(path)
             return
 
