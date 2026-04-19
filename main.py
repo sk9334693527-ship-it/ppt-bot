@@ -34,13 +34,13 @@ GROQ_KEYS = [
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini
+# Gemini models
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Groq
+# Groq clients
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 # ===== IMAGE ENHANCE =====
@@ -72,14 +72,16 @@ def generate_ai(prompt):
 
     return ""
 
-# ===== PROMPT (UPDATED) =====
+# ===== PROMPT (STRICT COUNT) =====
 FIX_PROMPT = """
 तुम एक MCQ generator हो।
 
-काम:
-1. दिए गए टेक्स्ट से MCQ बनाओ
-2. हर प्रश्न के 4 विकल्प (A, B, C, D)
-3. सही उत्तर भी बताओ
+जरूरी नियम:
+1. यूजर जितने प्रश्न मांगे उतने ही बनाओ
+2. अगर संख्या नहीं दी है तो default 10 प्रश्न बनाओ
+3. हर प्रश्न अलग होना चाहिए
+4. हर प्रश्न में 4 विकल्प (A, B, C, D)
+5. सही उत्तर भी दो
 
 FORMAT STRICT:
 
@@ -90,6 +92,8 @@ C)
 D)
 उत्तर: A
 
+(इसी format में सारे प्रश्न)
+
 कोई extra text नहीं देना।
 
 TEXT:
@@ -98,7 +102,6 @@ TEXT:
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
-
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -145,29 +148,20 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            box = slide.shapes.add_textbox(
-                Inches(3.5),
-                Inches(1),
-                Inches(9),
-                Inches(5)
-            )
-
+            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
             tf = box.text_frame
             tf.clear()
             setup_tf(tf)
 
-            # Clean question (only remove "प्रश्न")
             question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
             question_text = f"{i}. {question_text}"
 
-            # QUESTION
             p = tf.paragraphs[0]
             p.text = question_text
             style_question(p)
 
             tf.add_paragraph().text = ""
 
-            # OPTIONS + ANSWER
             for line in lines[1:]:
                 if line.startswith("उत्तर"):
                     ans = re.sub(r"उत्तर[:\s]*", "", line)
@@ -177,7 +171,7 @@ async def make_ppt(update, questions):
                     p.text = line
                     style_option(p)
 
-    # ===== LAST SLIDE (ANSWERS) =====
+    # ===== ANSWER SLIDE =====
     if answers:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
@@ -210,8 +204,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # 👉 NEW: prompt-based MCQ generation
-    fixed = generate_ai(FIX_PROMPT + text)
+    # 🔢 Extract number from prompt
+    match = re.search(r"(\d+)", text)
+    count = match.group(1) if match else "10"
+
+    smart_prompt = f"कुल {count} प्रश्न बनाओ\n\n{text}"
+
+    fixed = generate_ai(FIX_PROMPT + smart_prompt)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -286,7 +285,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
-
         os.remove(path)
         await make_ppt(update, questions)
 
