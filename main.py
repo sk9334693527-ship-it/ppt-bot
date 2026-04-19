@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import pdfplumber
 import pytesseract
 import google.generativeai as genai
@@ -33,8 +34,35 @@ BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
 GEMINI_KEYS = load_keys("GEMINI_API_KEY")
 GROQ_KEYS = load_keys("GROQ_API_KEY")
 
-gemini_index = 0
-groq_index = 0
+# ===== KEY MANAGER =====
+class KeyManager:
+    def __init__(self, keys):
+        self.keys = keys
+        self.index = 0
+        self.sleep_map = {}
+
+    def get_key(self):
+        for _ in range(len(self.keys)):
+            key = self.keys[self.index]
+
+            if key in self.sleep_map:
+                if time.time() < self.sleep_map[key]:
+                    self.index = (self.index + 1) % len(self.keys)
+                    continue
+                else:
+                    del self.sleep_map[key]
+
+            return key
+
+        return None
+
+    def mark_failed(self, key):
+        print(f"⛔ Sleeping key: {key[:10]}")
+        self.sleep_map[key] = time.time() + 3600
+        self.index = (self.index + 1) % len(self.keys)
+
+gemini_manager = KeyManager(GEMINI_KEYS)
+groq_manager = KeyManager(GROQ_KEYS)
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -45,34 +73,36 @@ def enhance_image(img):
 
 # ===== AI =====
 def generate_ai(prompt):
-    global gemini_index, groq_index
 
-    print("Gemini Keys:", GEMINI_KEYS)
-    print("Groq Keys:", GROQ_KEYS)
-
-    # GEMINI
+    # ===== GEMINI FIRST =====
     for _ in range(len(GEMINI_KEYS)):
+        key = gemini_manager.get_key()
+
+        if not key:
+            break
+
         try:
-            key = GEMINI_KEYS[gemini_index]
-            print("Trying Gemini:", key[:10])
+            print("Using Gemini:", key[:10])
 
             genai.configure(api_key=key)
             model = genai.GenerativeModel("gemini-2.5-flash")
 
             res = model.generate_content(prompt)
-
-            gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
             return res.text
 
         except Exception as e:
             print("Gemini Error:", e)
-            gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
+            gemini_manager.mark_failed(key)
 
-    # GROQ
+    # ===== GROQ FALLBACK =====
     for _ in range(len(GROQ_KEYS)):
+        key = groq_manager.get_key()
+
+        if not key:
+            break
+
         try:
-            key = GROQ_KEYS[groq_index]
-            print("Trying Groq:", key[:10])
+            print("Using Groq:", key[:10])
 
             client = Groq(api_key=key)
 
@@ -81,14 +111,13 @@ def generate_ai(prompt):
                 model="llama3-70b-8192"
             )
 
-            groq_index = (groq_index + 1) % len(GROQ_KEYS)
             return chat.choices[0].message.content
 
         except Exception as e:
             print("Groq Error:", e)
-            groq_index = (groq_index + 1) % len(GROQ_KEYS)
+            groq_manager.mark_failed(key)
 
-    print("❌ All AI failed")
+    print("❌ All AI sleeping or failed")
     return ""
 
 # ===== PROMPT =====
@@ -150,9 +179,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    fixed = generate_ai(FIX_PROMPT + text)
+    fixed = generate_ai(FIX_PROMPT + update.message.text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -177,10 +204,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(path)
 
     if not text or len(text.strip()) < 20:
-        await update.message.reply_text("❌ Image se text sahi nahi nikla")
+        await update.message.reply_text("❌ Text extract nahi hua")
         return
-
-    await update.message.reply_text("🧠 AI processing...")
 
     fixed = generate_ai(FIX_PROMPT + text)
 
@@ -195,79 +220,50 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
-    doc = update.message.document
-    file = await doc.get_file()
-
+    file = await update.message.document.get_file()
     path = "file.pdf"
     await file.download_to_drive(path)
 
     try:
         all_text = ""
 
-        # TEXT PDF
         with pdfplumber.open(path) as pdf:
-            for i, page in enumerate(pdf.pages):
-                await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
+            for page in pdf.pages:
                 text = page.extract_text()
                 if text:
                     all_text += text + "\n"
 
-        if len(all_text.strip()) > 50:
-            await update.message.reply_text("🧠 AI processing full PDF...")
+        if len(all_text.strip()) < 50:
+            await update.message.reply_text("⚠ OCR use ho raha hai...")
 
-            fixed = generate_ai(FIX_PROMPT + all_text)
+            for i in range(1, 50):
+                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                if not images:
+                    break
 
-            if not fixed:
-                await update.message.reply_text("❌ AI fail ho gaya")
-                return
+                img = enhance_image(images[0])
+                text = pytesseract.image_to_string(img, lang="hin+eng")
 
-            questions = re.split(r"\n(?=प्रश्न)", fixed)
+                if text:
+                    all_text += text + "\n"
 
-            os.remove(path)
-            await make_ppt(update, questions)
-            return
-
-        # OCR fallback
-        await update.message.reply_text("⚠ Scanned PDF — OCR...")
-
-        all_text = ""
-
-        for i in range(1, 50):
-            await update.message.reply_text(f"📄 Page {i} OCR...")
-
-            images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-            if not images:
-                break
-
-            img = enhance_image(images[0])
-            text = pytesseract.image_to_string(img, lang="hin+eng")
-
-            if text:
-                all_text += text + "\n"
+        os.remove(path)
 
         if len(all_text.strip()) < 20:
-            await update.message.reply_text("❌ Kuch extract nahi hua")
-            os.remove(path)
+            await update.message.reply_text("❌ PDF se kuch nahi mila")
             return
-
-        await update.message.reply_text("🧠 AI processing OCR text...")
 
         fixed = generate_ai(FIX_PROMPT + all_text)
 
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
-            os.remove(path)
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
-
-        os.remove(path)
         await make_ppt(update, questions)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ ERROR: {str(e)}")
-        if os.path.exists(path):
-            os.remove(path)
+        await update.message.reply_text(f"❌ ERROR: {e}")
 
 # ===== MAIN =====
 def main():
