@@ -2,16 +2,12 @@ import os
 import re
 import time
 import requests
-import pdfplumber
-import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
-from pdf2image import convert_from_path
-
 from pptx import Presentation
+
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ===== CLEAN ENV =====
+# ===== ENV CLEAN =====
 def clean_key(key):
     if not key:
         return None
@@ -28,9 +24,8 @@ def load_keys(prefix, max_keys=5):
 BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
 GROQ_KEYS = load_keys("GROQ_API_KEY")
 
-# ===== SIMPLE KEY ROTATION =====
+# ===== KEY ROTATION =====
 key_index = 0
-
 def get_key():
     global key_index
     if not GROQ_KEYS:
@@ -39,57 +34,51 @@ def get_key():
     key_index = (key_index + 1) % len(GROQ_KEYS)
     return key
 
-# ===== IMAGE =====
-def enhance_image(img):
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    return img.filter(ImageFilter.SHARPEN)
-
-# ===== GROQ CALL (STABLE) =====
+# ===== GROQ CALL =====
 def call_ai(prompt):
     for _ in range(len(GROQ_KEYS)):
         key = get_key()
         if not key:
             break
 
-        try:
-            res = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "llama3-8b-8192",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3
-                },
-                timeout=25
-            )
+        for attempt in range(3):
+            try:
+                res = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "llama3-8b-8192",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.3
+                    },
+                    timeout=25
+                )
 
-            print("STATUS:", res.status_code)
+                print("STATUS:", res.status_code)
 
-            if res.status_code != 200:
+                if res.status_code != 200:
+                    time.sleep(2)
+                    continue
+
+                data = res.json()
+
+                content = data["choices"][0]["message"]["content"]
+
+                if content and len(content.strip()) > 10:
+                    return content
+
+            except Exception as e:
+                print("ERROR:", e)
                 time.sleep(2)
-                continue
-
-            data = res.json()
-
-            content = data["choices"][0]["message"]["content"]
-
-            if content and len(content.strip()) > 10:
-                return content
-
-        except Exception as e:
-            print("ERROR:", e)
-            time.sleep(2)
 
     return ""
 
 # ===== 2 STEP AI =====
 def process_text(text):
 
-    # STEP 1 CLEAN
     clean_prompt = f"""
 टेक्स्ट साफ करो:
 - spelling ठीक करो
@@ -103,7 +92,6 @@ def process_text(text):
     if not cleaned:
         return None
 
-    # STEP 2 MCQ
     mcq_prompt = f"""
 नीचे दिए गए टेक्स्ट से MCQ बनाओ
 
@@ -129,7 +117,7 @@ async def make_ppt(update, questions):
             continue
 
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = lines[0]
+        slide.shapes.title.text = lines[0][:200]
 
         tf = slide.placeholders[1].text_frame
         tf.text = ""
@@ -147,13 +135,15 @@ async def make_ppt(update, questions):
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Text / Image / PDF bhejo")
+    await update.message.reply_text("Text bhejo, MCQ PPT bana dunga 📄➡️📊")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = process_text(update.message.text)
+    text = update.message.text
+
+    result = process_text(text)
 
     if not result:
-        await update.message.reply_text("❌ AI failed (check logs)")
+        await update.message.reply_text("❌ AI failed (logs check karo)")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", result)
@@ -168,7 +158,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.run_polling()
+    # 🔥 IMPORTANT (NO CONFLICT FIX)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
