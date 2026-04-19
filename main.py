@@ -1,9 +1,9 @@
 import os
 import re
 import time
+import requests
 import pdfplumber
 import pytesseract
-from groq import Groq
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
@@ -27,7 +27,6 @@ def load_keys(prefix, max_keys=15):
             keys.append(key)
     return keys
 
-# ===== CONFIG =====
 BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
 GROQ_KEYS = load_keys("GROQ_API_KEY")
 
@@ -50,86 +49,97 @@ class KeyManager:
                     del self.sleep_map[key]
 
             return key
-
         return None
 
     def mark_failed(self, key):
-        print(f"⛔ Sleeping key: {key[:10]}")
+        print("⛔ Sleeping:", key[:10])
         self.sleep_map[key] = time.time() + 3600
         self.index = (self.index + 1) % len(self.keys)
 
 groq_manager = KeyManager(GROQ_KEYS)
 
-# ===== IMAGE ENHANCE =====
+# ===== IMAGE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== GROQ CALL =====
+# ===== DIRECT GROQ API =====
 def call_groq(prompt):
     for _ in range(len(GROQ_KEYS)):
         key = groq_manager.get_key()
         if not key:
             break
 
-        try:
-            print("Using Groq:", key[:10])
+        url = "https://api.groq.com/openai/v1/chat/completions"
 
-            client = Groq(api_key=key)
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json"
+        }
 
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-8b-8192"
-            )
+        data = {
+            "model": "llama3-8b-8192",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3
+        }
 
-            if not chat or not chat.choices:
-                groq_manager.mark_failed(key)
-                continue
+        # ===== RETRY SYSTEM =====
+        for attempt in range(3):
+            try:
+                print(f"🔄 Try {attempt+1} with key {key[:8]}")
 
-            content = chat.choices[0].message.content
+                res = requests.post(
+                    url,
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
 
-            if not content or len(content.strip()) < 5:
-                groq_manager.mark_failed(key)
-                continue
+                print("STATUS:", res.status_code)
+                print("RAW:", res.text[:200])
 
-            return content
+                if res.status_code != 200:
+                    time.sleep(2)
+                    continue
 
-        except Exception as e:
-            print("Groq ERROR:", e)
-            groq_manager.mark_failed(key)
+                result = res.json()
+
+                if "choices" not in result:
+                    continue
+
+                content = result["choices"][0]["message"]["content"]
+
+                if content and len(content.strip()) > 5:
+                    return content
+
+            except Exception as e:
+                print("ERROR:", e)
+                time.sleep(2)
+
+        groq_manager.mark_failed(key)
 
     return ""
 
 # ===== 2 STEP AI =====
 def process_text(text):
 
-    # STEP 1: CLEAN TEXT
     clean_prompt = f"""
 टेक्स्ट साफ करो:
 - spelling ठीक करो
-- extra line हटाओ
+- extra हटाओ
 - readable बनाओ
-- कुछ नया मत जोड़ो
 
-TEXT:
 {text}
 """
 
     cleaned = call_groq(clean_prompt)
-
     if not cleaned:
         return None
 
-    # STEP 2: MCQ
     mcq_prompt = f"""
 नीचे दिए गए टेक्स्ट से MCQ बनाओ
-
-RULE:
-- सिर्फ प्रश्न निकालो
-- खुद से answer मत बनाओ
-- format strict रखो
 
 FORMAT:
 प्रश्न ...
@@ -138,13 +148,10 @@ B)
 C)
 D)
 
-TEXT:
 {cleaned}
 """
 
-    final = call_groq(mcq_prompt)
-
-    return final
+    return call_groq(mcq_prompt)
 
 # ===== PPT =====
 async def make_ppt(update, questions):
@@ -174,83 +181,17 @@ async def make_ppt(update, questions):
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo")
+    await update.message.reply_text("Text / Image / PDF bhejo")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    result = process_text(text)
+    result = process_text(update.message.text)
 
     if not result:
-        await update.message.reply_text("❌ AI failed")
+        await update.message.reply_text("❌ AI failed (network/API issue)")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", result)
     await make_ppt(update, questions)
-
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Processing...")
-
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
-
-    path = "img.jpg"
-    await file.download_to_drive(path)
-
-    img = enhance_image(Image.open(path))
-    text = pytesseract.image_to_string(img, lang="hin+eng")
-
-    os.remove(path)
-
-    result = process_text(text)
-
-    if not result:
-        await update.message.reply_text("❌ AI failed")
-        return
-
-    questions = re.split(r"\n(?=प्रश्न)", result)
-    await make_ppt(update, questions)
-
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 Processing PDF...")
-
-    file = await update.message.document.get_file()
-    path = "file.pdf"
-    await file.download_to_drive(path)
-
-    all_text = ""
-
-    try:
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    all_text += text + "\n"
-
-        if len(all_text.strip()) < 50:
-            for i in range(1, 20):
-                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-                if not images:
-                    break
-
-                img = enhance_image(images[0])
-                text = pytesseract.image_to_string(img, lang="hin+eng")
-                if text:
-                    all_text += text + "\n"
-
-        os.remove(path)
-
-        result = process_text(all_text)
-
-        if not result:
-            await update.message.reply_text("❌ AI failed")
-            return
-
-        questions = re.split(r"\n(?=प्रश्न)", result)
-        await make_ppt(update, questions)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ ERROR: {e}")
 
 # ===== MAIN =====
 def main():
@@ -260,8 +201,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
-    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
     app.run_polling()
 
