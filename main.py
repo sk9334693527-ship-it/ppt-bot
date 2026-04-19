@@ -72,7 +72,7 @@ def generate_ai(prompt):
 
     return ""
 
-# ===== PROMPT (STRICT COUNT) =====
+# ===== PROMPT =====
 FIX_PROMPT = """
 तुम एक MCQ generator हो।
 
@@ -95,8 +95,6 @@ D)
 (इसी format में सारे प्रश्न)
 
 कोई extra text नहीं देना।
-
-TEXT:
 """
 
 # ===== PPT =====
@@ -171,7 +169,6 @@ async def make_ppt(update, questions):
                     p.text = line
                     style_option(p)
 
-    # ===== ANSWER SLIDE =====
     if answers:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
@@ -201,16 +198,23 @@ async def make_ppt(update, questions):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
 
+# ✅ FIXED PART ONLY HERE
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # 🔢 Extract number from prompt
     match = re.search(r"(\d+)", text)
     count = match.group(1) if match else "10"
 
-    smart_prompt = f"कुल {count} प्रश्न बनाओ\n\n{text}"
+    fixed_prompt = f"""
+{FIX_PROMPT}
 
-    fixed = generate_ai(FIX_PROMPT + smart_prompt)
+कुल {count} प्रश्न बनाओ
+
+TEXT:
+{text}
+"""
+
+    fixed = generate_ai(fixed_prompt)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -237,7 +241,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Image se text sahi nahi nikla")
         return
 
-    fixed = generate_ai(FIX_PROMPT + text)
+    fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -265,7 +269,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_text += text + "\n"
 
         if len(all_text.strip()) > 50:
-            fixed = generate_ai(FIX_PROMPT + all_text)
+            fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + all_text)
         else:
             all_text = ""
             for i in range(1, 50):
@@ -277,7 +281,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-            fixed = generate_ai(FIX_PROMPT + all_text)
+            fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + all_text)
 
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
