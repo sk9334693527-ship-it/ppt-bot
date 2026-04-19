@@ -13,12 +13,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.5-flash")
-groq_client = Groq(api_key=GROQ_API_KEY)
+# MULTI API KEYS
+GEMINI_KEYS = os.getenv("GEMINI_KEYS", "").split(",")
+GROQ_KEYS = os.getenv("GROQ_KEYS", "").split(",")
+
+gemini_index = 0
+groq_index = 0
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -27,20 +28,45 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI =====
+# ===== AI (MULTI KEY ROTATION) =====
 def generate_ai(prompt):
-    try:
-        res = gemini_model.generate_content(prompt)
-        return res.text
-    except:
-        try:
-            chat = groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-70b-8192"
-            )
-            return chat.choices[0].message.content
-        except:
-            return ""
+    global gemini_index, groq_index
+
+    # ===== GEMINI ROTATION =====
+    if GEMINI_KEYS and GEMINI_KEYS != ['']:
+        for _ in range(len(GEMINI_KEYS)):
+            try:
+                key = GEMINI_KEYS[gemini_index].strip()
+                genai.configure(api_key=key)
+
+                model = genai.GenerativeModel("gemini-2.5-flash")
+                res = model.generate_content(prompt)
+
+                gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
+                return res.text
+
+            except Exception:
+                gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
+
+    # ===== GROQ ROTATION =====
+    if GROQ_KEYS and GROQ_KEYS != ['']:
+        for _ in range(len(GROQ_KEYS)):
+            try:
+                key = GROQ_KEYS[groq_index].strip()
+                client = Groq(api_key=key)
+
+                chat = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model="llama3-70b-8192"
+                )
+
+                groq_index = (groq_index + 1) % len(GROQ_KEYS)
+                return chat.choices[0].message.content
+
+            except Exception:
+                groq_index = (groq_index + 1) % len(GROQ_KEYS)
+
+    return ""
 
 # ===== PROMPT =====
 FIX_PROMPT = """
@@ -113,7 +139,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await make_ppt(update, questions)
 
-# ===== IMAGE (UPDATED FULL TEXT FLOW) =====
+# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
@@ -125,7 +151,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     img = enhance_image(Image.open(path))
 
-    # OCR full text
     text = pytesseract.image_to_string(img, lang="hin+eng")
 
     os.remove(path)
@@ -146,7 +171,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await make_ppt(update, questions)
 
-# ===== PDF (FULL TEXT FLOW) =====
+# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
