@@ -14,9 +14,17 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# MULTI API KEYS
-GEMINI_KEYS = os.getenv("GEMINI_KEYS", "").split(",")
-GROQ_KEYS = os.getenv("GROQ_KEYS", "").split(",")
+# ===== MULTI KEY LOADER (1,2,3 STYLE) =====
+def load_keys(prefix, max_keys=15):
+    keys = []
+    for i in range(1, max_keys + 1):
+        key = os.getenv(f"{prefix}{i}")
+        if key:
+            keys.append(key)
+    return keys
+
+GEMINI_KEYS = load_keys("GEMINI_API_KEY")
+GROQ_KEYS = load_keys("GROQ_API_KEY")
 
 gemini_index = 0
 groq_index = 0
@@ -28,43 +36,41 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI (MULTI KEY ROTATION) =====
+# ===== AI ROTATION =====
 def generate_ai(prompt):
     global gemini_index, groq_index
 
-    # ===== GEMINI ROTATION =====
-    if GEMINI_KEYS and GEMINI_KEYS != ['']:
-        for _ in range(len(GEMINI_KEYS)):
-            try:
-                key = GEMINI_KEYS[gemini_index].strip()
-                genai.configure(api_key=key)
+    # ===== GEMINI =====
+    for _ in range(len(GEMINI_KEYS)):
+        try:
+            key = GEMINI_KEYS[gemini_index]
+            genai.configure(api_key=key)
 
-                model = genai.GenerativeModel("gemini-2.5-flash")
-                res = model.generate_content(prompt)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            res = model.generate_content(prompt)
 
-                gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
-                return res.text
+            gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
+            return res.text
 
-            except Exception:
-                gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
+        except:
+            gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
 
-    # ===== GROQ ROTATION =====
-    if GROQ_KEYS and GROQ_KEYS != ['']:
-        for _ in range(len(GROQ_KEYS)):
-            try:
-                key = GROQ_KEYS[groq_index].strip()
-                client = Groq(api_key=key)
+    # ===== GROQ =====
+    for _ in range(len(GROQ_KEYS)):
+        try:
+            key = GROQ_KEYS[groq_index]
+            client = Groq(api_key=key)
 
-                chat = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model="llama3-70b-8192"
-                )
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama3-70b-8192"
+            )
 
-                groq_index = (groq_index + 1) % len(GROQ_KEYS)
-                return chat.choices[0].message.content
+            groq_index = (groq_index + 1) % len(GROQ_KEYS)
+            return chat.choices[0].message.content
 
-            except Exception:
-                groq_index = (groq_index + 1) % len(GROQ_KEYS)
+        except:
+            groq_index = (groq_index + 1) % len(GROQ_KEYS)
 
     return ""
 
@@ -136,7 +142,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
     await make_ppt(update, questions)
 
 # ===== IMAGE =====
@@ -150,7 +155,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     img = enhance_image(Image.open(path))
-
     text = pytesseract.image_to_string(img, lang="hin+eng")
 
     os.remove(path)
@@ -159,7 +163,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Image se text sahi nahi nikla")
         return
 
-    await update.message.reply_text("🧠 AI pura text process kar raha hai...")
+    await update.message.reply_text("🧠 AI processing...")
 
     fixed = generate_ai(FIX_PROMPT + text)
 
@@ -168,7 +172,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
     await make_ppt(update, questions)
 
 # ===== PDF =====
@@ -193,7 +196,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_text += text + "\n"
 
         if len(all_text.strip()) > 50:
-            await update.message.reply_text("🧠 AI full PDF process kar raha hai...")
+            await update.message.reply_text("🧠 AI processing full PDF...")
 
             fixed = generate_ai(FIX_PROMPT + all_text)
 
@@ -208,7 +211,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # OCR fallback
-        await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
+        await update.message.reply_text("⚠ Scanned PDF — OCR...")
 
         all_text = ""
 
@@ -226,11 +229,11 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 all_text += text + "\n"
 
         if len(all_text.strip()) < 20:
-            await update.message.reply_text("❌ Kuch bhi extract nahi ho paya")
+            await update.message.reply_text("❌ Kuch extract nahi hua")
             os.remove(path)
             return
 
-        await update.message.reply_text("🧠 OCR text AI ko bheja ja raha hai...")
+        await update.message.reply_text("🧠 AI processing OCR text...")
 
         fixed = generate_ai(FIX_PROMPT + all_text)
 
