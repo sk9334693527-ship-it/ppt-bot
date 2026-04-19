@@ -74,32 +74,30 @@ def generate_ai(prompt):
 
 # ===== PROMPT =====
 FIX_PROMPT = """
-तुम एक MCQ generator हो।
+तुम एक हिंदी MCQ generator हो।
 
-जरूरी नियम:
-1. यूजर जितने प्रश्न मांगे उतने ही बनाओ
-2. अगर संख्या नहीं दी है तो default 10 प्रश्न बनाओ
-3. हर प्रश्न अलग होना चाहिए
-4. हर प्रश्न में 4 विकल्प (A, B, C, D)
-5. सही उत्तर भी दो
+काम:
+1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
+2. मात्रा की गलती सुधारो
+3. प्रश्न का अर्थ मत बदलो
+4. MCQ format में बदलो
 
 FORMAT STRICT:
-
 प्रश्न ...
 A)
 B)
 C)
 D)
-उत्तर: A
-
-(इसी format में सारे प्रश्न)
 
 कोई extra text नहीं देना।
+
+TEXT:
 """
 
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
+
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -116,14 +114,12 @@ async def make_ppt(update, questions):
     def style_question(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 0)
+            run.font.color.rgb = RGBColor(255, 255, 0)  # Yellow
 
     def style_option(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 255)
-
-    answers = []
+            run.font.color.rgb = RGBColor(255, 255, 255)  # White
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -146,45 +142,36 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
+            box = slide.shapes.add_textbox(
+                Inches(3.5),
+                Inches(1),
+                Inches(9),
+                Inches(5)
+            )
+
             tf = box.text_frame
             tf.clear()
             setup_tf(tf)
 
-            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
+            # Clean question (only remove "प्रश्न")
+            question_text = lines[0]
+            question_text = re.sub(r"^प्रश्न\s*", "", question_text)
+
+            # Add numbering
             question_text = f"{i}. {question_text}"
 
+            # QUESTION
             p = tf.paragraphs[0]
             p.text = question_text
             style_question(p)
 
             tf.add_paragraph().text = ""
 
-            for line in lines[1:]:
-                if line.startswith("उत्तर"):
-                    ans = re.sub(r"उत्तर[:\s]*", "", line)
-                    answers.append(f"{i}. {ans}")
-                else:
-                    p = tf.add_paragraph()
-                    p.text = line
-                    style_option(p)
-
-    if answers:
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
-        set_black_background(slide)
-
-        box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
-        tf = box.text_frame
-        setup_tf(tf)
-
-        p = tf.paragraphs[0]
-        p.text = "Answers"
-        style_question(p)
-
-        for ans in answers:
-            p = tf.add_paragraph()
-            p.text = ans
-            style_option(p)
+            # OPTIONS
+            for opt in lines[1:]:
+                p = tf.add_paragraph()
+                p.text = opt
+                style_option(p)
 
     file = "output.pptx"
     prs.save(file)
@@ -198,76 +185,17 @@ async def make_ppt(update, questions):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
 
-# ✅ UPDATED LOGIC
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    original_text = update.message.text
-    text = original_text.lower()
+    text = update.message.text
+    fixed = generate_ai(FIX_PROMPT + text)
 
-    # detect MCQ intent
-    is_mcq = False
+    if not fixed:
+        await update.message.reply_text("❌ AI fail ho gaya")
+        return
 
-    if re.search(r"\b(mcq|quiz|test|प्रश्न|question)\b", text):
-        is_mcq = True
+    questions = re.split(r"\n(?=प्रश्न)", fixed)
+    await make_ppt(update, questions)
 
-    if re.search(r"\d+", text):
-        is_mcq = True
-
-    # ===== MCQ MODE =====
-    if is_mcq:
-        match = re.search(r"(\d+)", text)
-        count = match.group(1) if match else "10"
-
-        fixed_prompt = f"""
-{FIX_PROMPT}
-
-कुल {count} प्रश्न बनाओ
-
-TEXT:
-{original_text}
-"""
-
-        fixed = generate_ai(fixed_prompt)
-
-        if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya")
-            return
-
-        questions = re.split(r"\n(?=प्रश्न)", fixed)
-        await make_ppt(update, questions)
-
-    # ===== QUESTION MODE =====
-    else:
-        prs = Presentation()
-        prs.slide_width = Inches(13.33)
-        prs.slide_height = Inches(7.5)
-
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
-
-        bg = slide.background
-        fill = bg.fill
-        fill.solid()
-        fill.fore_color.rgb = RGBColor(0, 0, 0)
-
-        box = slide.shapes.add_textbox(Inches(2), Inches(2.5), Inches(10), Inches(2))
-        tf = box.text_frame
-        tf.word_wrap = True
-
-        p = tf.paragraphs[0]
-        p.text = original_text
-
-        for run in p.runs:
-            run.font.size = Pt(32)
-            run.font.color.rgb = RGBColor(255, 255, 255)
-
-        file = "output.pptx"
-        prs.save(file)
-
-        with open(file, "rb") as f:
-            await update.message.reply_document(InputFile(f))
-
-        os.remove(file)
-
-# ===== बाकी same =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
@@ -286,7 +214,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Image se text sahi nahi nikla")
         return
 
-    fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + text)
+    fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -314,7 +242,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_text += text + "\n"
 
         if len(all_text.strip()) > 50:
-            fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + all_text)
+            fixed = generate_ai(FIX_PROMPT + all_text)
         else:
             all_text = ""
             for i in range(1, 50):
@@ -326,7 +254,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-            fixed = generate_ai(FIX_PROMPT + "\nTEXT:\n" + all_text)
+            fixed = generate_ai(FIX_PROMPT + all_text)
 
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
@@ -334,6 +262,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
+
         os.remove(path)
         await make_ppt(update, questions)
 
