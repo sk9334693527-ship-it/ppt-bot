@@ -198,31 +198,76 @@ async def make_ppt(update, questions):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
 
-# ✅ FIXED PART ONLY HERE
+# ✅ UPDATED LOGIC
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    original_text = update.message.text
+    text = original_text.lower()
 
-    match = re.search(r"(\d+)", text)
-    count = match.group(1) if match else "10"
+    # detect MCQ intent
+    is_mcq = False
 
-    fixed_prompt = f"""
+    if re.search(r"\b(mcq|quiz|test|प्रश्न|question)\b", text):
+        is_mcq = True
+
+    if re.search(r"\d+", text):
+        is_mcq = True
+
+    # ===== MCQ MODE =====
+    if is_mcq:
+        match = re.search(r"(\d+)", text)
+        count = match.group(1) if match else "10"
+
+        fixed_prompt = f"""
 {FIX_PROMPT}
 
 कुल {count} प्रश्न बनाओ
 
 TEXT:
-{text}
+{original_text}
 """
 
-    fixed = generate_ai(fixed_prompt)
+        fixed = generate_ai(fixed_prompt)
 
-    if not fixed:
-        await update.message.reply_text("❌ AI fail ho gaya")
-        return
+        if not fixed:
+            await update.message.reply_text("❌ AI fail ho gaya")
+            return
 
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
-    await make_ppt(update, questions)
+        questions = re.split(r"\n(?=प्रश्न)", fixed)
+        await make_ppt(update, questions)
 
+    # ===== QUESTION MODE =====
+    else:
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+        bg = slide.background
+        fill = bg.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(0, 0, 0)
+
+        box = slide.shapes.add_textbox(Inches(2), Inches(2.5), Inches(10), Inches(2))
+        tf = box.text_frame
+        tf.word_wrap = True
+
+        p = tf.paragraphs[0]
+        p.text = original_text
+
+        for run in p.runs:
+            run.font.size = Pt(32)
+            run.font.color.rgb = RGBColor(255, 255, 255)
+
+        file = "output.pptx"
+        prs.save(file)
+
+        with open(file, "rb") as f:
+            await update.message.reply_document(InputFile(f))
+
+        os.remove(file)
+
+# ===== बाकी same =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
