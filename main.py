@@ -11,17 +11,24 @@ from pptx import Presentation
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ===== CONFIG =====
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ===== CLEAN KEY =====
+def clean_key(key):
+    if not key:
+        return None
+    return key.strip().strip('"').strip("'")
 
-# ===== MULTI KEY LOADER (1,2,3 STYLE) =====
+# ===== LOAD KEYS =====
 def load_keys(prefix, max_keys=15):
     keys = []
     for i in range(1, max_keys + 1):
-        key = os.getenv(f"{prefix}{i}")
+        raw = os.getenv(f"{prefix}{i}")
+        key = clean_key(raw)
         if key:
             keys.append(key)
     return keys
+
+# ===== CONFIG =====
+BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
 
 GEMINI_KEYS = load_keys("GEMINI_API_KEY")
 GROQ_KEYS = load_keys("GROQ_API_KEY")
@@ -36,29 +43,37 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI ROTATION =====
+# ===== AI =====
 def generate_ai(prompt):
     global gemini_index, groq_index
 
-    # ===== GEMINI =====
+    print("Gemini Keys:", GEMINI_KEYS)
+    print("Groq Keys:", GROQ_KEYS)
+
+    # GEMINI
     for _ in range(len(GEMINI_KEYS)):
         try:
             key = GEMINI_KEYS[gemini_index]
-            genai.configure(api_key=key)
+            print("Trying Gemini:", key[:10])
 
+            genai.configure(api_key=key)
             model = genai.GenerativeModel("gemini-2.5-flash")
+
             res = model.generate_content(prompt)
 
             gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
             return res.text
 
-        except:
+        except Exception as e:
+            print("Gemini Error:", e)
             gemini_index = (gemini_index + 1) % len(GEMINI_KEYS)
 
-    # ===== GROQ =====
+    # GROQ
     for _ in range(len(GROQ_KEYS)):
         try:
             key = GROQ_KEYS[groq_index]
+            print("Trying Groq:", key[:10])
+
             client = Groq(api_key=key)
 
             chat = client.chat.completions.create(
@@ -69,9 +84,11 @@ def generate_ai(prompt):
             groq_index = (groq_index + 1) % len(GROQ_KEYS)
             return chat.choices[0].message.content
 
-        except:
+        except Exception as e:
+            print("Groq Error:", e)
             groq_index = (groq_index + 1) % len(GROQ_KEYS)
 
+    print("❌ All AI failed")
     return ""
 
 # ===== PROMPT =====
