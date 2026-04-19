@@ -98,11 +98,11 @@ D)
 TEXT:
 """
 
-# ===== PPT (LEFT SPACE + BOX LAYOUT) =====
+# ===== PPT (SINGLE BOX LAYOUT) =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
-    # 16:9
+    # 16:9 ratio
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -112,11 +112,11 @@ async def make_ppt(update, questions):
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    def style_text(tf, size):
-        for p in tf.paragraphs:
-            for run in p.runs:
-                run.font.size = Pt(size)
-                run.font.color.rgb = RGBColor(255, 255, 255)
+    def style_paragraph(paragraph, size, bold=False):
+        for run in paragraph.runs:
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -124,8 +124,9 @@ async def make_ppt(update, questions):
 
         box = slide.shapes.add_textbox(Inches(4), Inches(3), Inches(6), Inches(1))
         tf = box.text_frame
-        tf.text = "❌ No Data"
-        style_text(tf, 36)
+        p = tf.paragraphs[0]
+        p.text = "❌ No Data"
+        style_paragraph(p, 36, True)
 
     else:
         for q in questions:
@@ -139,32 +140,31 @@ async def make_ppt(update, questions):
             # LEFT SPACE (~30%)
             left_margin = Inches(4)
 
-            # QUESTION BOX
-            q_box = slide.shapes.add_textbox(
+            # SINGLE BOX (question + options)
+            box = slide.shapes.add_textbox(
                 left_margin,
                 Inches(1),
                 Inches(8),
-                Inches(2)
+                Inches(5)
             )
-            q_tf = q_box.text_frame
-            q_tf.text = lines[0][:200]
-            style_text(q_tf, 36)
 
-            # OPTIONS BOX
-            opt_box = slide.shapes.add_textbox(
-                left_margin,
-                Inches(3.2),
-                Inches(8),
-                Inches(3)
-            )
-            opt_tf = opt_box.text_frame
-            opt_tf.text = ""
+            tf = box.text_frame
+            tf.clear()
 
-            for l in lines[1:]:
-                p = opt_tf.add_paragraph()
-                p.text = l
+            # Question
+            p = tf.paragraphs[0]
+            p.text = lines[0]
+            style_paragraph(p, 36, True)
 
-            style_text(opt_tf, 28)
+            # Space
+            space = tf.add_paragraph()
+            space.text = ""
+
+            # Options
+            for opt in lines[1:]:
+                p = tf.add_paragraph()
+                p.text = opt
+                style_paragraph(p, 28)
 
     file = "output.pptx"
     prs.save(file)
