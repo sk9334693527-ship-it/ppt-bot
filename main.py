@@ -64,18 +64,43 @@ class KeyManager:
 gemini_manager = KeyManager(GEMINI_KEYS)
 groq_manager = KeyManager(GROQ_KEYS)
 
-# ===== IMAGE =====
+# ===== IMAGE ENHANCE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== GROQ MODELS (AUTO FALLBACK) =====
-GROQ_MODELS = [
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768"
-]
+# ===== GROQ SAFE CALL =====
+def call_groq(prompt, key):
+    try:
+        client = Groq(api_key=key)
+
+        chat = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama3-8b-8192"
+        )
+
+        print("Groq RAW:", chat)
+
+        if not chat or not chat.choices:
+            return None
+
+        choice = chat.choices[0]
+
+        if not choice.message:
+            return None
+
+        content = choice.message.content
+
+        if not content or len(content.strip()) < 5:
+            return None
+
+        return content
+
+    except Exception as e:
+        print("Groq ERROR:", str(e))
+        return None
 
 # ===== AI =====
 def generate_ai(prompt):
@@ -96,37 +121,31 @@ def generate_ai(prompt):
             model = genai.GenerativeModel("gemini-2.5-flash")
 
             res = model.generate_content(prompt)
-            return res.text
+
+            if res and res.text:
+                return res.text
 
         except Exception as e:
             print("Gemini ERROR:", str(e))
             gemini_manager.mark_failed(key)
 
-    # ===== GROQ FALLBACK =====
+    # ===== GROQ =====
     for _ in range(len(GROQ_KEYS)):
         key = groq_manager.get_key()
+
         if not key:
             break
 
-        for model_name in GROQ_MODELS:
-            try:
-                print(f"Using Groq: {key[:10]} | Model: {model_name}")
+        print("Using Groq:", key[:10])
 
-                client = Groq(api_key=key)
+        result = call_groq(prompt, key)
 
-                chat = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=model_name
-                )
+        if result:
+            return result
+        else:
+            groq_manager.mark_failed(key)
 
-                return chat.choices[0].message.content
-
-            except Exception as e:
-                print("Groq ERROR:", str(e))
-
-        groq_manager.mark_failed(key)
-
-    print("❌ All AI sleeping or failed")
+    print("❌ All AI failed")
     return ""
 
 # ===== PROMPT =====
