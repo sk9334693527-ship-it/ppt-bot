@@ -23,25 +23,22 @@ GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY"),
     os.getenv("GEMINI_API_KEY1"),
     os.getenv("GEMINI_API_KEY2"),
-    os.getenv("GEMINI_API_KEY3"),
 ]
 
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY"),
     os.getenv("GROQ_API_KEY1"),
-    os.getenv("GROQ_API_KEY2"),
 ]
 
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini models
+# ===== AI SETUP =====
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Groq clients
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 # ===== IMAGE ENHANCE =====
@@ -51,27 +48,48 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI =====
+# ===== AI CALL =====
 def generate_ai(prompt):
-    for model in gemini_models:
-        try:
-            res = model.generate_content(prompt)
-            if res.text:
-                return res.text
-        except:
-            continue
+    prompt = prompt[:12000]
 
-    for client in groq_clients:
-        try:
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-70b-8192"
-            )
-            return chat.choices[0].message.content
-        except:
-            continue
+    for _ in range(3):
+        for model in gemini_models:
+            try:
+                res = model.generate_content(prompt)
+                if res.text and len(res.text.strip()) > 20:
+                    return res.text
+            except:
+                continue
+
+        for client in groq_clients:
+            try:
+                chat = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model="llama3-70b-8192"
+                )
+                text = chat.choices[0].message.content
+                if text and len(text.strip()) > 20:
+                    return text
+            except:
+                continue
 
     return ""
+
+# ===== LARGE TEXT PROCESS =====
+def process_large_text(text):
+    text = re.sub(r'\s+', ' ', text)
+
+    chunk_size = 3000
+    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+
+    final_output = ""
+
+    for chunk in chunks[:6]:
+        result = generate_ai(FIX_PROMPT + chunk)
+        if result:
+            final_output += result + "\n"
+
+    return final_output
 
 # ===== PROMPT =====
 FIX_PROMPT = """
@@ -107,97 +125,77 @@ def convert_ppt_to_pdf(ppt_path):
 
     return ppt_path.replace(".pptx", ".pdf")
 
-# ===== PPT =====
+# ===== PPT GENERATE =====
 async def make_ppt(update, questions):
     prs = Presentation()
-
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
-    def set_black_background(slide):
+    def set_bg(slide):
         bg = slide.background
         fill = bg.fill
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    def setup_tf(tf):
+    def setup(tf):
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
-    def style_question(p):
+    def style_q(p):
         for run in p.runs:
             run.font.size = Pt(24)
             run.font.color.rgb = RGBColor(255, 255, 0)
 
-    def style_option(p):
+    def style_o(p):
         for run in p.runs:
             run.font.size = Pt(24)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-    if not questions:
+    for i, q in enumerate(questions, start=1):
+        lines = [l.strip() for l in q.split("\n") if l.strip()]
+        if not lines:
+            continue
+
         slide = prs.slides.add_slide(prs.slide_layouts[6])
-        set_black_background(slide)
+        set_bg(slide)
 
-        box = slide.shapes.add_textbox(Inches(3.5), Inches(3), Inches(9), Inches(1))
+        box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
         tf = box.text_frame
-        setup_tf(tf)
+        tf.clear()
+        setup(tf)
 
+        question = re.sub(r"^प्रश्न\s*", "", lines[0])
         p = tf.paragraphs[0]
-        p.text = "❌ No Data"
-        style_question(p)
+        p.text = f"{i}. {question}"
+        style_q(p)
 
-    else:
-        for i, q in enumerate(questions, start=1):
-            lines = [l.strip() for l in q.split("\n") if l.strip()]
-            if not lines:
-                continue
+        tf.add_paragraph().text = ""
 
-            slide = prs.slides.add_slide(prs.slide_layouts[6])
-            set_black_background(slide)
-
-            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
-            tf = box.text_frame
-            tf.clear()
-            setup_tf(tf)
-
-            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
-            question_text = f"{i}. {question_text}"
-
-            p = tf.paragraphs[0]
-            p.text = question_text
-            style_question(p)
-
-            tf.add_paragraph().text = ""
-
-            for opt in lines[1:]:
-                p = tf.add_paragraph()
-                p.text = opt
-                style_option(p)
+        for opt in lines[1:]:
+            p = tf.add_paragraph()
+            p.text = opt
+            style_o(p)
 
     ppt_file = "output.pptx"
     prs.save(ppt_file)
 
-    # Convert to PDF
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
-    # Send PPT
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    # Send PDF
     with open(pdf_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    # Cleanup
     os.remove(ppt_file)
     os.remove(pdf_file)
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
+    await update.message.reply_text("📄 PDF / 📸 Image / ✍️ Text bhejo — PPT + PDF bana dunga")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fixed = generate_ai(FIX_PROMPT + update.message.text)
+    fixed = process_large_text(update.message.text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -219,11 +217,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = pytesseract.image_to_string(img, lang="hin+eng")
     os.remove(path)
 
-    if not text or len(text.strip()) < 20:
-        await update.message.reply_text("❌ Image se text nahi nikla")
+    if len(text.strip()) < 20:
+        await update.message.reply_text("❌ Text nahi nikla")
         return
 
-    fixed = generate_ai(FIX_PROMPT + text)
+    fixed = process_large_text(text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -246,22 +244,23 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    all_text += text + "\n"
+                t = page.extract_text()
+                if t:
+                    all_text += t + "\n"
+
+        if len(all_text.strip()) < 100:
+            images = convert_from_path(path, dpi=300)
+            for img in images:
+                img = enhance_image(img)
+                t = pytesseract.image_to_string(img, lang="hin+eng")
+                if t:
+                    all_text += t + "\n"
 
         if len(all_text.strip()) < 50:
-            all_text = ""
-            for i in range(1, 50):
-                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-                if not images:
-                    break
-                img = enhance_image(images[0])
-                text = pytesseract.image_to_string(img, lang="hin+eng")
-                if text:
-                    all_text += text + "\n"
+            await update.message.reply_text("❌ PDF se text nahi nikla")
+            return
 
-        fixed = generate_ai(FIX_PROMPT + all_text)
+        fixed = process_large_text(all_text)
 
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
