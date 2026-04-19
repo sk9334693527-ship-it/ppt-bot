@@ -18,7 +18,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ===== MULTIPLE GEMINI KEYS =====
 GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY"),
     os.getenv("GEMINI_API_KEY1"),
@@ -26,7 +25,6 @@ GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY3"),
 ]
 
-# ===== MULTIPLE GROQ KEYS =====
 GROQ_KEYS = [
     os.getenv("GROQ_API_KEY"),
     os.getenv("GROQ_API_KEY1"),
@@ -36,16 +34,16 @@ GROQ_KEYS = [
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini models
+# Gemini
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Groq clients
+# Groq
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
-# ===== IMAGE ENHANCE =====
+# ===== IMAGE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
@@ -96,7 +94,7 @@ D)
 TEXT:
 """
 
-# ===== PPT FINAL =====
+# ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
@@ -131,7 +129,7 @@ async def make_ppt(update, questions):
         style(p)
 
     else:
-        for q in questions:
+        for i, q in enumerate(questions, start=1):
             lines = [l.strip() for l in q.split("\n") if l.strip()]
             if not lines:
                 continue
@@ -152,14 +150,18 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
-            # Question
+            # ===== CLEAN QUESTION =====
+            question_text = lines[0]
+            question_text = re.sub(r"^प्रश्न\s*\d*\s*", "", question_text)
+            question_text = f"{i}. {question_text}"
+
             p = tf.paragraphs[0]
-            p.text = lines[0]
+            p.text = question_text
             style(p)
 
             tf.add_paragraph().text = ""
 
-            # Options
+            # OPTIONS
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
