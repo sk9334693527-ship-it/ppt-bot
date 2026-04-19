@@ -64,20 +64,28 @@ class KeyManager:
 gemini_manager = KeyManager(GEMINI_KEYS)
 groq_manager = KeyManager(GROQ_KEYS)
 
-# ===== IMAGE ENHANCE =====
+# ===== IMAGE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
+# ===== GROQ MODELS (AUTO FALLBACK) =====
+GROQ_MODELS = [
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768"
+]
+
 # ===== AI =====
 def generate_ai(prompt):
+
+    print("Gemini Keys:", GEMINI_KEYS)
+    print("Groq Keys:", GROQ_KEYS)
 
     # ===== GEMINI FIRST =====
     for _ in range(len(GEMINI_KEYS)):
         key = gemini_manager.get_key()
-
         if not key:
             break
 
@@ -91,31 +99,32 @@ def generate_ai(prompt):
             return res.text
 
         except Exception as e:
-            print("Gemini Error:", e)
+            print("Gemini ERROR:", str(e))
             gemini_manager.mark_failed(key)
 
     # ===== GROQ FALLBACK =====
     for _ in range(len(GROQ_KEYS)):
         key = groq_manager.get_key()
-
         if not key:
             break
 
-        try:
-            print("Using Groq:", key[:10])
+        for model_name in GROQ_MODELS:
+            try:
+                print(f"Using Groq: {key[:10]} | Model: {model_name}")
 
-            client = Groq(api_key=key)
+                client = Groq(api_key=key)
 
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-70b-8192"
-            )
+                chat = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=model_name
+                )
 
-            return chat.choices[0].message.content
+                return chat.choices[0].message.content
 
-        except Exception as e:
-            print("Groq Error:", e)
-            groq_manager.mark_failed(key)
+            except Exception as e:
+                print("Groq ERROR:", str(e))
+
+        groq_manager.mark_failed(key)
 
     print("❌ All AI sleeping or failed")
     return ""
@@ -126,18 +135,16 @@ FIX_PROMPT = """
 
 काम:
 1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
-2. मात्रा की गलती सुधारो
-3. प्रश्न का अर्थ मत बदलो
-4. MCQ format में बदलो
+2. मात्रा सुधारो
+3. अर्थ वही रखो
+4. MCQ format बनाओ
 
-FORMAT STRICT:
+FORMAT:
 प्रश्न ...
 A)
 B)
 C)
 D)
-
-कोई extra text नहीं देना।
 
 TEXT:
 """
@@ -149,7 +156,7 @@ async def make_ppt(update, questions):
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
         slide.shapes.title.text = "❌ No Data"
-        slide.placeholders[1].text = "कुछ भी extract नहीं हुआ"
+        slide.placeholders[1].text = "कुछ नहीं मिला"
     else:
         for q in questions:
             lines = [l.strip() for l in q.split("\n") if l.strip()]
@@ -173,24 +180,22 @@ async def make_ppt(update, questions):
 
     os.remove(file)
 
-# ===== START =====
+# ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo")
 
-# ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fixed = generate_ai(FIX_PROMPT + update.message.text)
 
     if not fixed:
-        await update.message.reply_text("❌ AI fail ho gaya")
+        await update.message.reply_text("❌ AI failed")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
-# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image process ho rahi hai...")
+    await update.message.reply_text("📸 Processing...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -203,30 +208,29 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     os.remove(path)
 
-    if not text or len(text.strip()) < 20:
-        await update.message.reply_text("❌ Text extract nahi hua")
+    if not text:
+        await update.message.reply_text("❌ OCR fail")
         return
 
     fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
-        await update.message.reply_text("❌ AI fail ho gaya")
+        await update.message.reply_text("❌ AI failed")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
 
-# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 PDF process ho raha hai...")
+    await update.message.reply_text("📄 Processing PDF...")
 
     file = await update.message.document.get_file()
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    try:
-        all_text = ""
+    all_text = ""
 
+    try:
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
@@ -234,29 +238,26 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_text += text + "\n"
 
         if len(all_text.strip()) < 50:
-            await update.message.reply_text("⚠ OCR use ho raha hai...")
-
-            for i in range(1, 50):
+            for i in range(1, 20):
                 images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
                 if not images:
                     break
 
                 img = enhance_image(images[0])
                 text = pytesseract.image_to_string(img, lang="hin+eng")
-
                 if text:
                     all_text += text + "\n"
 
         os.remove(path)
 
-        if len(all_text.strip()) < 20:
-            await update.message.reply_text("❌ PDF se kuch nahi mila")
+        if not all_text:
+            await update.message.reply_text("❌ No text")
             return
 
         fixed = generate_ai(FIX_PROMPT + all_text)
 
         if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya")
+            await update.message.reply_text("❌ AI failed")
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
@@ -267,6 +268,12 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== MAIN =====
 def main():
+    print("🚀 Bot starting...")
+
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN missing")
+        return
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -274,7 +281,6 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
-    print("🚀 Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
