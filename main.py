@@ -11,120 +11,85 @@ from pptx import Presentation
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ===== CLEAN KEY =====
+# ===== CLEAN ENV =====
 def clean_key(key):
     if not key:
         return None
     return key.strip().strip('"').strip("'")
 
-# ===== LOAD KEYS =====
-def load_keys(prefix, max_keys=15):
+def load_keys(prefix, max_keys=5):
     keys = []
     for i in range(1, max_keys + 1):
-        raw = os.getenv(f"{prefix}{i}")
-        key = clean_key(raw)
-        if key:
-            keys.append(key)
+        val = clean_key(os.getenv(f"{prefix}{i}"))
+        if val:
+            keys.append(val)
     return keys
 
 BOT_TOKEN = clean_key(os.getenv("BOT_TOKEN"))
 GROQ_KEYS = load_keys("GROQ_API_KEY")
 
-# ===== KEY MANAGER =====
-class KeyManager:
-    def __init__(self, keys):
-        self.keys = keys
-        self.index = 0
-        self.sleep_map = {}
+# ===== SIMPLE KEY ROTATION =====
+key_index = 0
 
-    def get_key(self):
-        for _ in range(len(self.keys)):
-            key = self.keys[self.index]
-
-            if key in self.sleep_map:
-                if time.time() < self.sleep_map[key]:
-                    self.index = (self.index + 1) % len(self.keys)
-                    continue
-                else:
-                    del self.sleep_map[key]
-
-            return key
+def get_key():
+    global key_index
+    if not GROQ_KEYS:
         return None
-
-    def mark_failed(self, key):
-        print("⛔ Sleeping:", key[:10])
-        self.sleep_map[key] = time.time() + 3600
-        self.index = (self.index + 1) % len(self.keys)
-
-groq_manager = KeyManager(GROQ_KEYS)
+    key = GROQ_KEYS[key_index]
+    key_index = (key_index + 1) % len(GROQ_KEYS)
+    return key
 
 # ===== IMAGE =====
 def enhance_image(img):
     img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.5)
-    img = img.filter(ImageFilter.SHARPEN)
-    return img
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    return img.filter(ImageFilter.SHARPEN)
 
-# ===== DIRECT GROQ API =====
-def call_groq(prompt):
+# ===== GROQ CALL (STABLE) =====
+def call_ai(prompt):
     for _ in range(len(GROQ_KEYS)):
-        key = groq_manager.get_key()
+        key = get_key()
         if not key:
             break
 
-        url = "https://api.groq.com/openai/v1/chat/completions"
+        try:
+            res = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "llama3-8b-8192",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3
+                },
+                timeout=25
+            )
 
-        headers = {
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json"
-        }
+            print("STATUS:", res.status_code)
 
-        data = {
-            "model": "llama3-8b-8192",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3
-        }
-
-        # ===== RETRY SYSTEM =====
-        for attempt in range(3):
-            try:
-                print(f"🔄 Try {attempt+1} with key {key[:8]}")
-
-                res = requests.post(
-                    url,
-                    headers=headers,
-                    json=data,
-                    timeout=30
-                )
-
-                print("STATUS:", res.status_code)
-                print("RAW:", res.text[:200])
-
-                if res.status_code != 200:
-                    time.sleep(2)
-                    continue
-
-                result = res.json()
-
-                if "choices" not in result:
-                    continue
-
-                content = result["choices"][0]["message"]["content"]
-
-                if content and len(content.strip()) > 5:
-                    return content
-
-            except Exception as e:
-                print("ERROR:", e)
+            if res.status_code != 200:
                 time.sleep(2)
+                continue
 
-        groq_manager.mark_failed(key)
+            data = res.json()
+
+            content = data["choices"][0]["message"]["content"]
+
+            if content and len(content.strip()) > 10:
+                return content
+
+        except Exception as e:
+            print("ERROR:", e)
+            time.sleep(2)
 
     return ""
 
 # ===== 2 STEP AI =====
 def process_text(text):
 
+    # STEP 1 CLEAN
     clean_prompt = f"""
 टेक्स्ट साफ करो:
 - spelling ठीक करो
@@ -134,10 +99,11 @@ def process_text(text):
 {text}
 """
 
-    cleaned = call_groq(clean_prompt)
+    cleaned = call_ai(clean_prompt)
     if not cleaned:
         return None
 
+    # STEP 2 MCQ
     mcq_prompt = f"""
 नीचे दिए गए टेक्स्ट से MCQ बनाओ
 
@@ -151,7 +117,7 @@ D)
 {cleaned}
 """
 
-    return call_groq(mcq_prompt)
+    return call_ai(mcq_prompt)
 
 # ===== PPT =====
 async def make_ppt(update, questions):
@@ -163,7 +129,7 @@ async def make_ppt(update, questions):
             continue
 
         slide = prs.slides.add_slide(prs.slide_layouts[1])
-        slide.shapes.title.text = lines[0][:200]
+        slide.shapes.title.text = lines[0]
 
         tf = slide.placeholders[1].text_frame
         tf.text = ""
@@ -187,7 +153,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = process_text(update.message.text)
 
     if not result:
-        await update.message.reply_text("❌ AI failed (network/API issue)")
+        await update.message.reply_text("❌ AI failed (check logs)")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", result)
