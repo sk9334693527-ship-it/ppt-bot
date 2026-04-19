@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import pdfplumber
 import pytesseract
 import google.generativeai as genai
@@ -14,10 +15,6 @@ from pptx.enum.text import MSO_AUTO_SIZE
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
-# ✅ NEW (PDF)
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import landscape, A4
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -98,42 +95,17 @@ D)
 TEXT:
 """
 
-# ===== PDF =====
-def make_pdf(questions):
-    file = "output.pdf"
+# ===== PPT → PDF CONVERTER =====
+def convert_ppt_to_pdf(ppt_file):
+    subprocess.run([
+        "libreoffice",
+        "--headless",
+        "--convert-to", "pdf",
+        ppt_file,
+        "--outdir", "."
+    ], check=True)
 
-    c = canvas.Canvas(file, pagesize=landscape(A4))
-    width, height = landscape(A4)
-
-    if not questions:
-        c.setFont("Helvetica-Bold", 30)
-        c.drawString(100, height // 2, "No Data")
-        c.save()
-        return file
-
-    for i, q in enumerate(questions, start=1):
-        lines = [l.strip() for l in q.split("\n") if l.strip()]
-        if not lines:
-            continue
-
-        y = height - 80
-
-        question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
-        question_text = f"{i}. {question_text}"
-
-        c.setFont("Helvetica-Bold", 20)
-        c.drawString(50, y, question_text)
-        y -= 40
-
-        c.setFont("Helvetica", 18)
-        for opt in lines[1:]:
-            c.drawString(70, y, opt)
-            y -= 30
-
-        c.showPage()
-
-    c.save()
-    return file
+    return ppt_file.replace(".pptx", ".pdf")
 
 # ===== PPT =====
 async def make_ppt(update, questions):
@@ -205,7 +177,8 @@ async def make_ppt(update, questions):
     ppt_file = "output.pptx"
     prs.save(ppt_file)
 
-    pdf_file = make_pdf(questions)
+    # 🔥 Convert to PDF (same design)
+    pdf_file = convert_ppt_to_pdf(ppt_file)
 
     # Send PPT
     with open(ppt_file, "rb") as f:
