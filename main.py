@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import pdfplumber
 import pytesseract
 import google.generativeai as genai
@@ -94,6 +95,18 @@ D)
 TEXT:
 """
 
+# ===== PPT → PDF =====
+def convert_ppt_to_pdf(ppt_path):
+    subprocess.run([
+        "libreoffice",
+        "--headless",
+        "--convert-to", "pdf",
+        "--outdir", ".",
+        ppt_path
+    ], check=True)
+
+    return ppt_path.replace(".pptx", ".pdf")
+
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
@@ -114,12 +127,12 @@ async def make_ppt(update, questions):
     def style_question(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 0)  # Yellow
+            run.font.color.rgb = RGBColor(255, 255, 0)
 
     def style_option(p):
         for run in p.runs:
             run.font.size = Pt(24)
-            run.font.color.rgb = RGBColor(255, 255, 255)  # White
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -142,52 +155,49 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            box = slide.shapes.add_textbox(
-                Inches(3.5),
-                Inches(1),
-                Inches(9),
-                Inches(5)
-            )
-
+            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
             tf = box.text_frame
             tf.clear()
             setup_tf(tf)
 
-            # Clean question (only remove "प्रश्न")
-            question_text = lines[0]
-            question_text = re.sub(r"^प्रश्न\s*", "", question_text)
-
-            # Add numbering
+            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
             question_text = f"{i}. {question_text}"
 
-            # QUESTION
             p = tf.paragraphs[0]
             p.text = question_text
             style_question(p)
 
             tf.add_paragraph().text = ""
 
-            # OPTIONS
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
                 style_option(p)
 
-    file = "output.pptx"
-    prs.save(file)
+    ppt_file = "output.pptx"
+    prs.save(ppt_file)
 
-    with open(file, "rb") as f:
+    # Convert to PDF
+    pdf_file = convert_ppt_to_pdf(ppt_file)
+
+    # Send PPT
+    with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    os.remove(file)
+    # Send PDF
+    with open(pdf_file, "rb") as f:
+        await update.message.reply_document(InputFile(f))
+
+    # Cleanup
+    os.remove(ppt_file)
+    os.remove(pdf_file)
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT bana dunga")
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    fixed = generate_ai(FIX_PROMPT + text)
+    fixed = generate_ai(FIX_PROMPT + update.message.text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
@@ -207,11 +217,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     img = enhance_image(Image.open(path))
     text = pytesseract.image_to_string(img, lang="hin+eng")
-
     os.remove(path)
 
     if not text or len(text.strip()) < 20:
-        await update.message.reply_text("❌ Image se text sahi nahi nikla")
+        await update.message.reply_text("❌ Image se text nahi nikla")
         return
 
     fixed = generate_ai(FIX_PROMPT + text)
@@ -241,9 +250,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-        if len(all_text.strip()) > 50:
-            fixed = generate_ai(FIX_PROMPT + all_text)
-        else:
+        if len(all_text.strip()) < 50:
             all_text = ""
             for i in range(1, 50):
                 images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
@@ -254,20 +261,19 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-            fixed = generate_ai(FIX_PROMPT + all_text)
+        fixed = generate_ai(FIX_PROMPT + all_text)
 
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
-            os.remove(path)
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
-
-        os.remove(path)
         await make_ppt(update, questions)
 
     except Exception as e:
         await update.message.reply_text(f"❌ ERROR: {str(e)}")
+
+    finally:
         if os.path.exists(path):
             os.remove(path)
 
