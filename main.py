@@ -34,16 +34,16 @@ GROQ_KEYS = [
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini
+# Gemini models
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Groq
+# Groq clients
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
-# ===== IMAGE =====
+# ===== IMAGE ENHANCE =====
 def enhance_image(img):
     img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.5)
@@ -137,10 +137,8 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            left_margin = Inches(3.5)
-
             box = slide.shapes.add_textbox(
-                left_margin,
+                Inches(3.5),
                 Inches(1),
                 Inches(9),
                 Inches(5)
@@ -150,9 +148,11 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
-            # ===== CLEAN QUESTION =====
+            # ✅ FIXED: Only remove "प्रश्न", keep numbers
             question_text = lines[0]
-            question_text = re.sub(r"^प्रश्न\s*\d*\s*", "", question_text)
+            question_text = re.sub(r"^प्रश्न\s*", "", question_text)
+
+            # Add numbering
             question_text = f"{i}. {question_text}"
 
             p = tf.paragraphs[0]
@@ -161,7 +161,6 @@ async def make_ppt(update, questions):
 
             tf.add_paragraph().text = ""
 
-            # OPTIONS
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
