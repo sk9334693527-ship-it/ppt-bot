@@ -8,6 +8,9 @@ from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
 from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -49,9 +52,9 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI (UPDATED WITH FALLBACK) =====
+# ===== AI =====
 def generate_ai(prompt):
-    # Try Gemini keys
+    # Gemini fallback
     for model in gemini_models:
         try:
             res = model.generate_content(prompt)
@@ -60,7 +63,7 @@ def generate_ai(prompt):
         except:
             continue
 
-    # Try Groq keys
+    # Groq fallback
     for client in groq_clients:
         try:
             chat = client.chat.completions.create(
@@ -95,14 +98,36 @@ D)
 TEXT:
 """
 
-# ===== PPT =====
+# ===== PPT (UPDATED) =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
+    # 16:9 ratio
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    def set_black_background(slide):
+        bg = slide.background
+        fill = bg.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(0, 0, 0)
+
+    def style_text(shape, size):
+        for p in shape.text_frame.paragraphs:
+            for run in p.runs:
+                run.font.size = Pt(size)
+                run.font.color.rgb = RGBColor(255, 255, 255)
+
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[1])
+        set_black_background(slide)
+
         slide.shapes.title.text = "❌ No Data"
+        style_text(slide.shapes.title, 36)
+
         slide.placeholders[1].text = "कुछ भी extract नहीं हुआ"
+        style_text(slide.placeholders[1], 24)
+
     else:
         for q in questions:
             lines = [l.strip() for l in q.split("\n") if l.strip()]
@@ -110,13 +135,19 @@ async def make_ppt(update, questions):
                 continue
 
             slide = prs.slides.add_slide(prs.slide_layouts[1])
+            set_black_background(slide)
+
             slide.shapes.title.text = lines[0][:200]
+            style_text(slide.shapes.title, 34)
 
             tf = slide.placeholders[1].text_frame
             tf.text = ""
 
             for l in lines[1:]:
-                tf.add_paragraph().text = l
+                p = tf.add_paragraph()
+                p.text = l
+
+            style_text(slide.placeholders[1], 26)
 
     file = "output.pptx"
     prs.save(file)
@@ -141,7 +172,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
     await make_ppt(update, questions)
 
 # ===== IMAGE =====
@@ -172,7 +202,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
     await make_ppt(update, questions)
 
 # ===== PDF =====
@@ -188,7 +217,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         all_text = ""
 
-        # TEXT PDF
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages):
                 await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
@@ -211,7 +239,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await make_ppt(update, questions)
             return
 
-        # OCR fallback
         await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
 
         all_text = ""
