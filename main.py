@@ -33,7 +33,6 @@ GROQ_KEYS = [
     os.getenv("GROQ_API_KEY2"),
 ]
 
-# Clean keys
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
@@ -97,7 +96,7 @@ D)
 TEXT:
 """
 
-# ===== PPT FINAL FIX =====
+# ===== PPT FINAL =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
@@ -114,23 +113,22 @@ async def make_ppt(update, questions):
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
-    def style(p, size, bold=False):
+    def style(p):
         for run in p.runs:
-            run.font.size = Pt(size)
-            run.font.bold = bold
+            run.font.size = Pt(24)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
 
-        box = slide.shapes.add_textbox(Inches(4), Inches(3), Inches(6), Inches(1))
+        box = slide.shapes.add_textbox(Inches(3.5), Inches(3), Inches(9), Inches(1))
         tf = box.text_frame
         setup_tf(tf)
 
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
-        style(p, 36, True)
+        style(p)
 
     else:
         for q in questions:
@@ -141,12 +139,12 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            left_margin = Inches(4)
+            left_margin = Inches(3.5)
 
             box = slide.shapes.add_textbox(
                 left_margin,
                 Inches(1),
-                Inches(8),
+                Inches(9),
                 Inches(5)
             )
 
@@ -154,17 +152,18 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
+            # Question
             p = tf.paragraphs[0]
             p.text = lines[0]
-            style(p, 36, True)
+            style(p)
 
-            space = tf.add_paragraph()
-            space.text = ""
+            tf.add_paragraph().text = ""
 
+            # Options
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
-                style(p, 28)
+                style(p)
 
     file = "output.pptx"
     prs.save(file)
