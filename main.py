@@ -13,12 +13,34 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-2.5-flash")
-groq_client = Groq(api_key=GROQ_API_KEY)
+# ===== MULTIPLE GEMINI KEYS =====
+GEMINI_KEYS = [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY1"),
+    os.getenv("GEMINI_API_KEY2"),
+    os.getenv("GEMINI_API_KEY3"),
+]
+
+# ===== MULTIPLE GROQ KEYS =====
+GROQ_KEYS = [
+    os.getenv("GROQ_API_KEY"),
+    os.getenv("GROQ_API_KEY1"),
+    os.getenv("GROQ_API_KEY2"),
+]
+
+# Remove empty keys
+GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
+GROQ_KEYS = [k for k in GROQ_KEYS if k]
+
+# Initialize Gemini models
+gemini_models = []
+for key in GEMINI_KEYS:
+    genai.configure(api_key=key)
+    gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
+
+# Initialize Groq clients
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -27,20 +49,29 @@ def enhance_image(img):
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# ===== AI =====
+# ===== AI (UPDATED WITH FALLBACK) =====
 def generate_ai(prompt):
-    try:
-        res = gemini_model.generate_content(prompt)
-        return res.text
-    except:
+    # Try Gemini keys
+    for model in gemini_models:
         try:
-            chat = groq_client.chat.completions.create(
+            res = model.generate_content(prompt)
+            if res.text:
+                return res.text
+        except:
+            continue
+
+    # Try Groq keys
+    for client in groq_clients:
+        try:
+            chat = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama3-70b-8192"
             )
             return chat.choices[0].message.content
         except:
-            return ""
+            continue
+
+    return ""
 
 # ===== PROMPT =====
 FIX_PROMPT = """
@@ -113,7 +144,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await make_ppt(update, questions)
 
-# ===== IMAGE (UPDATED FULL TEXT FLOW) =====
+# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
@@ -124,8 +155,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     img = enhance_image(Image.open(path))
-
-    # OCR full text
     text = pytesseract.image_to_string(img, lang="hin+eng")
 
     os.remove(path)
@@ -146,7 +175,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await make_ppt(update, questions)
 
-# ===== PDF (FULL TEXT FLOW) =====
+# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
