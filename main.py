@@ -102,6 +102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== TEXT =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+
     fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
@@ -109,9 +110,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
+
     await make_ppt(update, questions)
 
-# ===== IMAGE =====
+# ===== IMAGE (UPDATED FULL TEXT FLOW) =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
 
@@ -122,20 +124,29 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     img = enhance_image(Image.open(path))
+
+    # OCR full text
     text = pytesseract.image_to_string(img, lang="hin+eng")
 
-    fixed = generate_ai(FIX_PROMPT + text)
-
     os.remove(path)
+
+    if not text or len(text.strip()) < 20:
+        await update.message.reply_text("❌ Image se text sahi nahi nikla")
+        return
+
+    await update.message.reply_text("🧠 AI pura text process kar raha hai...")
+
+    fixed = generate_ai(FIX_PROMPT + text)
 
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
         return
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
+
     await make_ppt(update, questions)
 
-# ===== PDF (UPDATED FULL TEXT AI) =====
+# ===== PDF (FULL TEXT FLOW) =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
 
@@ -148,7 +159,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         all_text = ""
 
-        # ===== TRY TEXT EXTRACTION =====
+        # TEXT PDF
         with pdfplumber.open(path) as pdf:
             for i, page in enumerate(pdf.pages):
                 await update.message.reply_text(f"📄 Page {i+1} read ho raha hai...")
@@ -156,7 +167,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-        # ===== IF TEXT FOUND =====
         if len(all_text.strip()) > 50:
             await update.message.reply_text("🧠 AI full PDF process kar raha hai...")
 
@@ -172,7 +182,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await make_ppt(update, questions)
             return
 
-        # ===== OCR FALLBACK =====
+        # OCR fallback
         await update.message.reply_text("⚠ Scanned PDF detect hua — OCR chal raha hai...")
 
         all_text = ""
