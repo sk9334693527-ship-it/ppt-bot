@@ -98,11 +98,11 @@ D)
 TEXT:
 """
 
-# ===== PPT (UPDATED) =====
+# ===== PPT (LEFT SPACE + BOX LAYOUT) =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
-    # 16:9 ratio
+    # 16:9
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -112,21 +112,20 @@ async def make_ppt(update, questions):
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    def style_text(shape, size):
-        for p in shape.text_frame.paragraphs:
+    def style_text(tf, size):
+        for p in tf.paragraphs:
             for run in p.runs:
                 run.font.size = Pt(size)
                 run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
 
-        slide.shapes.title.text = "❌ No Data"
-        style_text(slide.shapes.title, 36)
-
-        slide.placeholders[1].text = "कुछ भी extract नहीं हुआ"
-        style_text(slide.placeholders[1], 24)
+        box = slide.shapes.add_textbox(Inches(4), Inches(3), Inches(6), Inches(1))
+        tf = box.text_frame
+        tf.text = "❌ No Data"
+        style_text(tf, 36)
 
     else:
         for q in questions:
@@ -134,20 +133,38 @@ async def make_ppt(update, questions):
             if not lines:
                 continue
 
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            slide.shapes.title.text = lines[0][:200]
-            style_text(slide.shapes.title, 34)
+            # LEFT SPACE (~30%)
+            left_margin = Inches(4)
 
-            tf = slide.placeholders[1].text_frame
-            tf.text = ""
+            # QUESTION BOX
+            q_box = slide.shapes.add_textbox(
+                left_margin,
+                Inches(1),
+                Inches(8),
+                Inches(2)
+            )
+            q_tf = q_box.text_frame
+            q_tf.text = lines[0][:200]
+            style_text(q_tf, 36)
+
+            # OPTIONS BOX
+            opt_box = slide.shapes.add_textbox(
+                left_margin,
+                Inches(3.2),
+                Inches(8),
+                Inches(3)
+            )
+            opt_tf = opt_box.text_frame
+            opt_tf.text = ""
 
             for l in lines[1:]:
-                p = tf.add_paragraph()
+                p = opt_tf.add_paragraph()
                 p.text = l
 
-            style_text(slide.placeholders[1], 26)
+            style_text(opt_tf, 28)
 
     file = "output.pptx"
     prs.save(file)
@@ -261,12 +278,12 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(path)
             return
 
-        await update.message.reply_text("🧠 OCR text AI ko bheja ja raha hai...")
+        await update.message.reply_text("🧠 OCR text AI ko bheja ja रहा है...")
 
         fixed = generate_ai(FIX_PROMPT + all_text)
 
         if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya")
+            await update.message.reply_text("❌ AI fail ho गया")
             os.remove(path)
             return
 
