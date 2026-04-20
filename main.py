@@ -4,7 +4,6 @@ import subprocess
 import pdfplumber
 import pytesseract
 import google.generativeai as genai
-from groq import Groq
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
@@ -19,73 +18,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ===== LOAD MULTIPLE KEYS (AUTO DETECT UP TO 15+) =====
-def load_keys(prefix, max_keys=15):
-    keys = []
-    for i in range(1, max_keys + 1):
-        key = os.getenv(f"{prefix}_{i}")
-        if key:
-            keys.append(key)
-    return keys
+# ✅ ONLY ONE GEMINI KEY
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-GEMINI_KEYS = load_keys("GEMINI_API_KEY", 15)
-GROQ_KEYS = load_keys("GROQ_API_KEY", 15)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ===== AI ROTATION SYSTEM =====
-CURRENT_AI_INDEX = 0
-
-def generate_ai(prompt):
-    global CURRENT_AI_INDEX
-
-    ai_pool = []
-
-    for key in GEMINI_KEYS:
-        ai_pool.append(("gemini", key))
-
-    for key in GROQ_KEYS:
-        ai_pool.append(("groq", key))
-
-    total = len(ai_pool)
-
-    if total == 0:
-        return ""
-
-    tried = 0
-
-    while tried < total:
-        ai_type, key = ai_pool[CURRENT_AI_INDEX]
-
-        try:
-            # GEMINI
-            if ai_type == "gemini":
-                genai.configure(api_key=key)
-                model = genai.GenerativeModel("gemini-1.5-flash")
-
-                res = model.generate_content(prompt)
-                if res.text:
-                    return res.text
-
-            # GROQ
-            elif ai_type == "groq":
-                client = Groq(api_key=key)
-
-                chat = client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model="llama3-70b-8192"
-                )
-
-                content = chat.choices[0].message.content
-                if content:
-                    return content
-
-        except:
-            pass
-
-        CURRENT_AI_INDEX = (CURRENT_AI_INDEX + 1) % total
-        tried += 1
-
-    CURRENT_AI_INDEX = 0
-    return ""
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -93,6 +31,19 @@ def enhance_image(img):
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
+
+
+# ===== AI =====
+def generate_ai(prompt):
+    try:
+        res = model.generate_content(prompt)
+        if res.text:
+            return res.text
+    except Exception as e:
+        print("AI Error:", e)
+
+    return ""
+
 
 # ===== PROMPT =====
 FIX_PROMPT = """
@@ -116,6 +67,7 @@ D)
 TEXT:
 """
 
+
 # ===== PPT → PDF =====
 def convert_ppt_to_pdf(ppt_path):
     subprocess.run([
@@ -127,6 +79,7 @@ def convert_ppt_to_pdf(ppt_path):
     ], check=True)
 
     return ppt_path.replace(".pptx", ".pdf")
+
 
 # ===== PPT =====
 async def make_ppt(update, questions):
@@ -209,9 +162,11 @@ async def make_ppt(update, questions):
     os.remove(ppt_file)
     os.remove(pdf_file)
 
+
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fixed = generate_ai(FIX_PROMPT + update.message.text)
@@ -222,6 +177,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
+
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 Image process ho rahi hai...")
@@ -248,6 +204,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     questions = re.split(r"\n(?=प्रश्न)", fixed)
     await make_ppt(update, questions)
+
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📄 PDF process ho raha hai...")
@@ -294,6 +251,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(path):
             os.remove(path)
 
+
 # ===== MAIN =====
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -305,6 +263,7 @@ def main():
 
     print("🚀 Bot running...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
