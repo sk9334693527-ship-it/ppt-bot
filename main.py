@@ -19,17 +19,21 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ===== LOAD MULTIPLE KEYS (AUTO DETECT UP TO 15+) =====
-def load_keys(prefix, max_keys=15):
-    keys = []
-    for i in range(1, max_keys + 1):
-        key = os.getenv(f"{prefix}_{i}")
-        if key:
-            keys.append(key)
-    return keys
+GEMINI_KEYS = [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY1"),
+    os.getenv("GEMINI_API_KEY2"),
+    os.getenv("GEMINI_API_KEY3"),
+]
 
-GEMINI_KEYS = load_keys("GEMINI_API_KEY", 15)
-GROQ_KEYS = load_keys("GROQ_API_KEY", 15)
+GROQ_KEYS = [
+    os.getenv("GROQ_API_KEY"),
+    os.getenv("GROQ_API_KEY1"),
+    os.getenv("GROQ_API_KEY2"),
+]
+
+GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
+GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
 # ===== AI ROTATION SYSTEM =====
 CURRENT_AI_INDEX = 0
