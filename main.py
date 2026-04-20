@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-3.1-flash-lite")
+model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
 
 # ===== IMAGE ENHANCE =====
