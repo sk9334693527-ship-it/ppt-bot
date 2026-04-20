@@ -35,14 +35,61 @@ GROQ_KEYS = [
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini models
-gemini_models = []
-for key in GEMINI_KEYS:
-    genai.configure(api_key=key)
-    gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
+# ===== AI ROTATION SYSTEM =====
+CURRENT_AI_INDEX = 0
 
-# Groq clients
-groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
+def generate_ai(prompt):
+    global CURRENT_AI_INDEX
+
+    ai_pool = []
+
+    for key in GEMINI_KEYS:
+        ai_pool.append(("gemini", key))
+
+    for key in GROQ_KEYS:
+        ai_pool.append(("groq", key))
+
+    total = len(ai_pool)
+
+    if total == 0:
+        return ""
+
+    tried = 0
+
+    while tried < total:
+        ai_type, key = ai_pool[CURRENT_AI_INDEX]
+
+        try:
+            # GEMINI
+            if ai_type == "gemini":
+                genai.configure(api_key=key)
+                model = genai.GenerativeModel("gemini-2.5-flash")
+
+                res = model.generate_content(prompt)
+                if res.text:
+                    return res.text
+
+            # GROQ
+            elif ai_type == "groq":
+                client = Groq(api_key=key)
+
+                chat = client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model="llama3-70b-8192"
+                )
+
+                content = chat.choices[0].message.content
+                if content:
+                    return content
+
+        except:
+            pass
+
+        CURRENT_AI_INDEX = (CURRENT_AI_INDEX + 1) % total
+        tried += 1
+
+    CURRENT_AI_INDEX = 0
+    return ""
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -50,28 +97,6 @@ def enhance_image(img):
     img = ImageEnhance.Contrast(img).enhance(2.5)
     img = img.filter(ImageFilter.SHARPEN)
     return img
-
-# ===== AI =====
-def generate_ai(prompt):
-    for model in gemini_models:
-        try:
-            res = model.generate_content(prompt)
-            if res.text:
-                return res.text
-        except:
-            continue
-
-    for client in groq_clients:
-        try:
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-70b-8192"
-            )
-            return chat.choices[0].message.content
-        except:
-            continue
-
-    return ""
 
 # ===== PROMPT =====
 FIX_PROMPT = """
@@ -177,18 +202,14 @@ async def make_ppt(update, questions):
     ppt_file = "output.pptx"
     prs.save(ppt_file)
 
-    # Convert to PDF
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
-    # Send PPT
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    # Send PDF
     with open(pdf_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    # Cleanup
     os.remove(ppt_file)
     os.remove(pdf_file)
 
