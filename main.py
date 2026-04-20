@@ -59,7 +59,7 @@ def generate_ai(prompt):
             # GEMINI
             if ai_type == "gemini":
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel("gemini-2.5-flash-lite")
+                model = genai.GenerativeModel("gemini-2.5-flash-")
 
                 res = model.generate_content(prompt)
                 if res.text:
