@@ -3,7 +3,6 @@ import re
 import subprocess
 import pdfplumber
 import pytesseract
-import google.generativeai as genai
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
@@ -18,12 +17,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ✅ ONLY ONE GEMINI KEY
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash-lite")
-
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -33,39 +26,30 @@ def enhance_image(img):
     return img
 
 
-# ===== AI =====
-def generate_ai(prompt):
-    try:
-        res = model.generate_content(prompt)
-        if res.text:
-            return res.text
-    except Exception as e:
-        print("AI Error:", e)
+# ===== SIMPLE QUESTION EXTRACTOR =====
+def extract_questions(text):
+    lines = text.split("\n")
+    questions = []
+    current = []
 
-    return ""
+    for line in lines:
+        line = line.strip()
 
+        if not line:
+            continue
 
-# ===== PROMPT =====
-FIX_PROMPT = """
-तुम एक हिंदी MCQ generator हो।
+        # Detect new question
+        if re.match(r"^\d+\.|^Q\.|^प्रश्न", line):
+            if current:
+                questions.append("\n".join(current))
+                current = []
 
-काम:
-1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
-2. मात्रा की गलती सुधारो
-3. प्रश्न का अर्थ मत बदलो
-4. MCQ format में बदलो
+        current.append(line)
 
-FORMAT STRICT:
-प्रश्न ...
-A)
-B)
-C)
-D)
+    if current:
+        questions.append("\n".join(current))
 
-कोई extra text नहीं देना।
-
-TEXT:
-"""
+    return questions
 
 
 # ===== PPT → PDF =====
@@ -153,9 +137,11 @@ async def make_ppt(update, questions):
 
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
+    # Send PPT
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
+    # Send PDF
     with open(pdf_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
@@ -169,13 +155,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fixed = generate_ai(FIX_PROMPT + update.message.text)
+    text = update.message.text
 
-    if not fixed:
-        await update.message.reply_text("❌ AI fail ho gaya")
-        return
-
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
+    questions = extract_questions(text)
     await make_ppt(update, questions)
 
 
@@ -196,13 +178,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Image se text nahi nikla")
         return
 
-    fixed = generate_ai(FIX_PROMPT + text)
-
-    if not fixed:
-        await update.message.reply_text("❌ AI fail ho gaya")
-        return
-
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
+    questions = extract_questions(text)
     await make_ppt(update, questions)
 
 
@@ -235,13 +211,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-        fixed = generate_ai(FIX_PROMPT + all_text)
-
-        if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya")
-            return
-
-        questions = re.split(r"\n(?=प्रश्न)", fixed)
+        questions = extract_questions(all_text)
         await make_ppt(update, questions)
 
     except Exception as e:
