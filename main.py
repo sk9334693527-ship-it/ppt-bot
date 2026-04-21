@@ -9,10 +9,10 @@ from pdf2image import convert_from_path
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import MSO_AUTO_SIZE
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -28,64 +28,54 @@ def enhance_image(img):
 
 # ===== CLEAN TEXT =====
 def clean_text(text):
-    lines = text.split("\n")
-    clean = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # remove WhatsApp timestamp
-        if re.search(r"\[\d{1,2}/\d{1,2}", line):
-            continue
-
-        # remove short names like "Pratik Sir:"
-        if ":" in line and len(line.split()) <= 4:
-            continue
-
-        clean.append(line)
-
-    return "\n".join(clean)
+    text = re.sub(r"\[.*?\]", "", text)
+    text = re.sub(r".*?:", "", text)
+    return text
 
 
-# ===== FINAL MCQ EXTRACTOR =====
+# ===== NORMALIZE OPTIONS =====
+def normalize(text):
+    text = re.sub(r"\(\s*([a-dA-D])\s*\)", r"\1.", text)
+    text = re.sub(r"\b([a-dA-D])\)", r"\1.", text)
+    return text
+
+
+# ===== MCQ EXTRACTOR =====
 def extract_mcq(text):
     text = clean_text(text)
-    lines = text.split("\n")
+    text = normalize(text)
 
-    questions = []
-    q_lines = []
-    opt_lines = []
-    collecting_options = False
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    mcqs = []
+    i = 0
 
-        # option detect
-        if re.match(r"^\(?[a-dA-D1-4][\)\.\-]", line):
-            collecting_options = True
-            opt_lines.append(line)
-            continue
+    while i < len(lines):
+        line = lines[i]
 
-        # new question detected after options
-        if collecting_options:
-            if len(opt_lines) >= 2 and q_lines:
-                questions.append("\n".join(q_lines + opt_lines))
+        if re.match(r"^[A-Da-d]\.", line):
+            opts = []
+            j = i
 
-            q_lines = []
-            opt_lines = []
-            collecting_options = False
+            while j < len(lines) and re.match(r"^[A-Da-d]\.", lines[j]):
+                opts.append(lines[j])
+                j += 1
 
-        q_lines.append(line)
+            if len(opts) >= 2:
+                q = []
+                k = i - 1
 
-    # last question
-    if q_lines and len(opt_lines) >= 2:
-        questions.append("\n".join(q_lines + opt_lines))
+                while k >= 0 and not re.match(r"^[A-Da-d]\.", lines[k]):
+                    q.insert(0, lines[k])
+                    k -= 1
 
-    return questions
+                mcqs.append("\n".join(q + opts))
+
+            i = j
+        else:
+            i += 1
+
+    return mcqs
 
 
 # ===== PPT → PDF =====
@@ -113,17 +103,7 @@ async def make_ppt(update, questions):
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
 
-    def style_question(p):
-        for run in p.runs:
-            run.font.size = Pt(28)
-            run.font.color.rgb = RGBColor(255, 255, 0)
-
-    def style_option(p):
-        for run in p.runs:
-            run.font.size = Pt(26)
-            run.font.color.rgb = RGBColor(255, 255, 255)
-
-    for i, q in enumerate(questions, start=1):
+    for i, q in enumerate(questions, 1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
 
@@ -133,22 +113,13 @@ async def make_ppt(update, questions):
 
         lines = q.split("\n")
 
-        # separate options and question
-        options = [l for l in lines if re.match(r"^\(?[a-dA-D1-4]", l)]
-        question_lines = [l for l in lines if l not in options]
-
-        # question
         p = tf.paragraphs[0]
-        p.text = f"{i}. " + " ".join(question_lines)
-        style_question(p)
+        p.text = f"{i}. " + lines[0]
 
-        tf.add_paragraph().text = ""
-
-        # options
-        for opt in options:
+        # बाकी question lines
+        for line in lines[1:]:
             p = tf.add_paragraph()
-            p.text = opt
-            style_option(p)
+            p.text = line
 
     ppt_file = "output.pptx"
     prs.save(ppt_file)
@@ -167,16 +138,17 @@ async def make_ppt(update, questions):
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — MCQ PPT bana dunga")
+    await update.message.reply_text("Text / Image / PDF bhejo — MCQ PPT bana dunga")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    questions = extract_mcq(update.message.text)
+    text = update.message.text
+    questions = extract_mcq(text)
     await make_ppt(update, questions)
 
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Processing image...")
+    await update.message.reply_text("Processing image...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -186,18 +158,15 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     img = enhance_image(Image.open(path))
     text = pytesseract.image_to_string(img, lang="hin+eng")
-    os.remove(path)
 
-    if len(text.strip()) < 20:
-        await update.message.reply_text("❌ Text not detected")
-        return
+    os.remove(path)
 
     questions = extract_mcq(text)
     await make_ppt(update, questions)
 
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 Processing PDF...")
+    await update.message.reply_text("Processing PDF...")
 
     doc = update.message.document
     file = await doc.get_file()
@@ -205,35 +174,27 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    try:
-        all_text = ""
+    all_text = ""
 
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    all_text += t + "\n"
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                all_text += t + "\n"
 
-        if len(all_text.strip()) < 50:
-            all_text = ""
-            for i in range(1, 50):
-                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-                if not images:
-                    break
-                img = enhance_image(images[0])
-                t = pytesseract.image_to_string(img, lang="hin+eng")
-                if t:
-                    all_text += t + "\n"
+    if len(all_text.strip()) < 50:
+        for i in range(1, 20):
+            images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+            if not images:
+                break
+            img = enhance_image(images[0])
+            t = pytesseract.image_to_string(img, lang="hin+eng")
+            all_text += t + "\n"
 
-        questions = extract_mcq(all_text)
-        await make_ppt(update, questions)
+    os.remove(path)
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ ERROR: {str(e)}")
-
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
+    questions = extract_mcq(all_text)
+    await make_ppt(update, questions)
 
 
 # ===== MAIN =====
