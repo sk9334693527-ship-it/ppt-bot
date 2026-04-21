@@ -26,11 +26,10 @@ def enhance_image(img):
     return img
 
 
-# ===== SIMPLE QUESTION EXTRACTOR =====
-def extract_questions(text):
+# ===== CLEAN TEXT =====
+def clean_text(text):
     lines = text.split("\n")
-    questions = []
-    current = []
+    clean = []
 
     for line in lines:
         line = line.strip()
@@ -38,16 +37,54 @@ def extract_questions(text):
         if not line:
             continue
 
-        # Detect new question
-        if re.match(r"^\d+\.|^Q\.|^प्रश्न", line):
-            if current:
-                questions.append("\n".join(current))
-                current = []
+        # remove > Raju etc
+        if line.startswith(">"):
+            continue
 
-        current.append(line)
+        # remove exam/date lines
+        if any(x in line for x in ["CHSL", "CGL", "SSC", "MTS", "Morning", "Evening"]):
+            continue
 
-    if current:
-        questions.append("\n".join(current))
+        clean.append(line)
+
+    return "\n".join(clean)
+
+
+# ===== MCQ EXTRACTOR =====
+def extract_mcq(text):
+    text = clean_text(text)
+    lines = text.split("\n")
+
+    questions = []
+    current_q = []
+    option_count = 0
+
+    for line in lines:
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # detect option (a) (b) (c) (d)
+        if re.match(r"^\(?[a-dA-D]\)", line):
+            current_q.append(line)
+            option_count += 1
+            continue
+
+        # detect new question
+        if ("?" in line or "किसके द्वारा" in line or "ज्ञात" in line or "कितनी" in line):
+            if current_q and option_count >= 2:
+                questions.append("\n".join(current_q))
+
+            current_q = [line]
+            option_count = 0
+            continue
+
+        current_q.append(line)
+
+    # last question
+    if current_q and option_count >= 2:
+        questions.append("\n".join(current_q))
 
     return questions
 
@@ -65,7 +102,7 @@ def convert_ppt_to_pdf(ppt_path):
     return ppt_path.replace(".pptx", ".pdf")
 
 
-# ===== PPT =====
+# ===== PPT MAKER =====
 async def make_ppt(update, questions):
     prs = Presentation()
 
@@ -84,24 +121,23 @@ async def make_ppt(update, questions):
 
     def style_question(p):
         for run in p.runs:
-            run.font.size = Pt(24)
+            run.font.size = Pt(28)
             run.font.color.rgb = RGBColor(255, 255, 0)
 
     def style_option(p):
         for run in p.runs:
-            run.font.size = Pt(24)
+            run.font.size = Pt(26)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
 
-        box = slide.shapes.add_textbox(Inches(3.5), Inches(3), Inches(9), Inches(1))
+        box = slide.shapes.add_textbox(Inches(3), Inches(3), Inches(8), Inches(1))
         tf = box.text_frame
-        setup_tf(tf)
 
         p = tf.paragraphs[0]
-        p.text = "❌ No Data"
+        p.text = "❌ No MCQ Found"
         style_question(p)
 
     else:
@@ -113,20 +149,19 @@ async def make_ppt(update, questions):
             slide = prs.slides.add_slide(prs.slide_layouts[6])
             set_black_background(slide)
 
-            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
+            box = slide.shapes.add_textbox(Inches(2), Inches(1), Inches(10), Inches(5))
             tf = box.text_frame
             tf.clear()
             setup_tf(tf)
 
-            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
-            question_text = f"{i}. {question_text}"
-
+            # question
             p = tf.paragraphs[0]
-            p.text = question_text
+            p.text = f"{i}. {lines[0]}"
             style_question(p)
 
             tf.add_paragraph().text = ""
 
+            # options
             for opt in lines[1:]:
                 p = tf.add_paragraph()
                 p.text = opt
@@ -137,11 +172,9 @@ async def make_ppt(update, questions):
 
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
-    # Send PPT
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
-    # Send PDF
     with open(pdf_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
@@ -151,18 +184,17 @@ async def make_ppt(update, questions):
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — MCQ PPT bana dunga")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-
-    questions = extract_questions(text)
+    questions = extract_mcq(text)
     await make_ppt(update, questions)
 
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image process ho rahi hai...")
+    await update.message.reply_text("📸 Processing image...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -175,15 +207,15 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove(path)
 
     if not text or len(text.strip()) < 20:
-        await update.message.reply_text("❌ Image se text nahi nikla")
+        await update.message.reply_text("❌ Text not detected")
         return
 
-    questions = extract_questions(text)
+    questions = extract_mcq(text)
     await make_ppt(update, questions)
 
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 PDF process ho raha hai...")
+    await update.message.reply_text("📄 Processing PDF...")
 
     doc = update.message.document
     file = await doc.get_file()
@@ -211,7 +243,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-        questions = extract_questions(all_text)
+        questions = extract_mcq(all_text)
         await make_ppt(update, questions)
 
     except Exception as e:
