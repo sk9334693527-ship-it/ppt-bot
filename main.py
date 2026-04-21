@@ -33,15 +33,14 @@ def clean_text(text):
 
     for line in lines:
         line = line.strip()
-
         if not line:
             continue
 
-        # remove WhatsApp timestamps
+        # remove WhatsApp timestamp
         if re.search(r"\[\d{1,2}/\d{1,2}", line):
             continue
 
-        # remove names like "Pratik Sir:"
+        # remove short names like "Pratik Sir:"
         if ":" in line and len(line.split()) <= 4:
             continue
 
@@ -56,38 +55,35 @@ def extract_mcq(text):
     lines = text.split("\n")
 
     questions = []
-    current_q = []
-    options = []
-    in_options = False
+    q_lines = []
+    opt_lines = []
+    collecting_options = False
 
     for line in lines:
         line = line.strip()
-
         if not line:
             continue
 
-        # detect option
+        # option detect
         if re.match(r"^\(?[a-dA-D1-4][\)\.\-]", line):
-            options.append(line)
-            in_options = True
+            collecting_options = True
+            opt_lines.append(line)
             continue
 
-        # अगर options खत्म हुए → save previous question
-        if in_options:
-            if current_q and len(options) >= 2:
-                questions.append("\n".join(current_q + options))
+        # new question detected after options
+        if collecting_options:
+            if len(opt_lines) >= 2 and q_lines:
+                questions.append("\n".join(q_lines + opt_lines))
 
-            # reset
-            current_q = []
-            options = []
-            in_options = False
+            q_lines = []
+            opt_lines = []
+            collecting_options = False
 
-        # question lines (multi-line support)
-        current_q.append(line)
+        q_lines.append(line)
 
     # last question
-    if current_q and len(options) >= 2:
-        questions.append("\n".join(current_q + options))
+    if q_lines and len(opt_lines) >= 2:
+        questions.append("\n".join(q_lines + opt_lines))
 
     return questions
 
@@ -113,14 +109,9 @@ async def make_ppt(update, questions):
     prs.slide_height = Inches(7.5)
 
     def set_black_background(slide):
-        bg = slide.background
-        fill = bg.fill
+        fill = slide.background.fill
         fill.solid()
         fill.fore_color.rgb = RGBColor(0, 0, 0)
-
-    def setup_tf(tf):
-        tf.word_wrap = True
-        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
     def style_question(p):
         for run in p.runs:
@@ -132,51 +123,32 @@ async def make_ppt(update, questions):
             run.font.size = Pt(26)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-    if not questions:
+    for i, q in enumerate(questions, start=1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
 
-        box = slide.shapes.add_textbox(Inches(3), Inches(3), Inches(8), Inches(1))
+        box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(11), Inches(5))
         tf = box.text_frame
+        tf.clear()
 
+        lines = q.split("\n")
+
+        # separate options and question
+        options = [l for l in lines if re.match(r"^\(?[a-dA-D1-4]", l)]
+        question_lines = [l for l in lines if l not in options]
+
+        # question
         p = tf.paragraphs[0]
-        p.text = "❌ No MCQ Found"
+        p.text = f"{i}. " + " ".join(question_lines)
         style_question(p)
 
-    else:
-        for i, q in enumerate(questions, start=1):
-            lines = [l.strip() for l in q.split("\n") if l.strip()]
-            if not lines:
-                continue
+        tf.add_paragraph().text = ""
 
-            slide = prs.slides.add_slide(prs.slide_layouts[6])
-            set_black_background(slide)
-
-            box = slide.shapes.add_textbox(Inches(2), Inches(1), Inches(10), Inches(5))
-            tf = box.text_frame
-            tf.clear()
-            setup_tf(tf)
-
-            # question
-            p = tf.paragraphs[0]
-            p.text = f"{i}. {lines[0]}"
-            style_question(p)
-
-            tf.add_paragraph().text = ""
-
-            # बाकी question lines (अगर multi-line है)
-            for extra_line in lines[1:-4]:
-                p = tf.add_paragraph()
-                p.text = extra_line
-                style_question(p)
-
-            tf.add_paragraph().text = ""
-
-            # options (last 4 lines)
-            for opt in lines[-4:]:
-                p = tf.add_paragraph()
-                p.text = opt
-                style_option(p)
+        # options
+        for opt in options:
+            p = tf.add_paragraph()
+            p.text = opt
+            style_option(p)
 
     ppt_file = "output.pptx"
     prs.save(ppt_file)
@@ -199,8 +171,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    questions = extract_mcq(text)
+    questions = extract_mcq(update.message.text)
     await make_ppt(update, questions)
 
 
@@ -217,7 +188,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = pytesseract.image_to_string(img, lang="hin+eng")
     os.remove(path)
 
-    if not text or len(text.strip()) < 20:
+    if len(text.strip()) < 20:
         await update.message.reply_text("❌ Text not detected")
         return
 
@@ -239,9 +210,9 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    all_text += text + "\n"
+                t = page.extract_text()
+                if t:
+                    all_text += t + "\n"
 
         if len(all_text.strip()) < 50:
             all_text = ""
@@ -250,9 +221,9 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not images:
                     break
                 img = enhance_image(images[0])
-                text = pytesseract.image_to_string(img, lang="hin+eng")
-                if text:
-                    all_text += text + "\n"
+                t = pytesseract.image_to_string(img, lang="hin+eng")
+                if t:
+                    all_text += t + "\n"
 
         questions = extract_mcq(all_text)
         await make_ppt(update, questions)
