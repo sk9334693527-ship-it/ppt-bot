@@ -50,7 +50,7 @@ def clean_text(text):
     return "\n".join(clean)
 
 
-# ===== FIXED MCQ EXTRACTOR =====
+# ===== FINAL MCQ EXTRACTOR =====
 def extract_mcq(text):
     text = clean_text(text)
     lines = text.split("\n")
@@ -58,6 +58,7 @@ def extract_mcq(text):
     questions = []
     current_q = []
     options = []
+    in_options = False
 
     for line in lines:
         line = line.strip()
@@ -65,27 +66,28 @@ def extract_mcq(text):
         if not line:
             continue
 
-        # detect option (a), a), A., (1)
+        # detect option
         if re.match(r"^\(?[a-dA-D1-4][\)\.\-]", line):
             options.append(line)
-
-            # 4 options complete → save question
-            if len(options) == 4:
-                if current_q:
-                    full_q = current_q + options
-                    questions.append("\n".join(full_q))
-
-                current_q = []
-                options = []
-
+            in_options = True
             continue
 
-        # new question line
-        if current_q and options:
-            # अगर बीच में कुछ गड़बड़ है → reset options
-            options = []
+        # अगर options खत्म हुए → save previous question
+        if in_options:
+            if current_q and len(options) >= 2:
+                questions.append("\n".join(current_q + options))
 
-        current_q = [line]
+            # reset
+            current_q = []
+            options = []
+            in_options = False
+
+        # question lines (multi-line support)
+        current_q.append(line)
+
+    # last question
+    if current_q and len(options) >= 2:
+        questions.append("\n".join(current_q + options))
 
     return questions
 
@@ -136,6 +138,7 @@ async def make_ppt(update, questions):
 
         box = slide.shapes.add_textbox(Inches(3), Inches(3), Inches(8), Inches(1))
         tf = box.text_frame
+
         p = tf.paragraphs[0]
         p.text = "❌ No MCQ Found"
         style_question(p)
@@ -161,8 +164,16 @@ async def make_ppt(update, questions):
 
             tf.add_paragraph().text = ""
 
-            # options
-            for opt in lines[1:]:
+            # बाकी question lines (अगर multi-line है)
+            for extra_line in lines[1:-4]:
+                p = tf.add_paragraph()
+                p.text = extra_line
+                style_question(p)
+
+            tf.add_paragraph().text = ""
+
+            # options (last 4 lines)
+            for opt in lines[-4:]:
                 p = tf.add_paragraph()
                 p.text = opt
                 style_option(p)
