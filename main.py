@@ -37,12 +37,12 @@ def clean_text(text):
         if not line:
             continue
 
-        # remove > Raju etc
-        if line.startswith(">"):
+        # remove WhatsApp timestamps
+        if re.search(r"\[\d{1,2}/\d{1,2}", line):
             continue
 
-        # remove exam/date lines
-        if any(x in line for x in ["CHSL", "CGL", "SSC", "MTS", "Morning", "Evening"]):
+        # remove short name tags like "Pratik Sir:"
+        if ":" in line and len(line.split()) <= 4:
             continue
 
         clean.append(line)
@@ -50,13 +50,13 @@ def clean_text(text):
     return "\n".join(clean)
 
 
-# ===== MCQ EXTRACTOR =====
+# ===== UNIVERSAL MCQ EXTRACTOR =====
 def extract_mcq(text):
     text = clean_text(text)
     lines = text.split("\n")
 
     questions = []
-    current_q = []
+    current = []
     option_count = 0
 
     for line in lines:
@@ -65,26 +65,23 @@ def extract_mcq(text):
         if not line:
             continue
 
-        # detect option (a) (b) (c) (d)
-        if re.match(r"^\(?[a-dA-D]\)", line):
-            current_q.append(line)
+        # detect options (a) / a) / A. / (1)
+        if re.match(r"^\(?[a-dA-D1-4][\)\.\-]", line):
+            current.append(line)
             option_count += 1
             continue
 
-        # detect new question
-        if ("?" in line or "किसके द्वारा" in line or "ज्ञात" in line or "कितनी" in line):
-            if current_q and option_count >= 2:
-                questions.append("\n".join(current_q))
-
-            current_q = [line]
+        # अगर 2+ options मिल गए तो question complete
+        if option_count >= 2:
+            questions.append("\n".join(current))
+            current = []
             option_count = 0
-            continue
 
-        current_q.append(line)
+        current.append(line)
 
     # last question
-    if current_q and option_count >= 2:
-        questions.append("\n".join(current_q))
+    if current and option_count >= 2:
+        questions.append("\n".join(current))
 
     return questions
 
@@ -172,6 +169,7 @@ async def make_ppt(update, questions):
 
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
+    # send files
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
@@ -232,6 +230,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
+        # fallback OCR
         if len(all_text.strip()) < 50:
             all_text = ""
             for i in range(1, 50):
