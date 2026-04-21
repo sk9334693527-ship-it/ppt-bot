@@ -41,7 +41,7 @@ def clean_text(text):
         if re.search(r"\[\d{1,2}/\d{1,2}", line):
             continue
 
-        # remove short name tags like "Pratik Sir:"
+        # remove names like "Pratik Sir:"
         if ":" in line and len(line.split()) <= 4:
             continue
 
@@ -50,14 +50,14 @@ def clean_text(text):
     return "\n".join(clean)
 
 
-# ===== UNIVERSAL MCQ EXTRACTOR =====
+# ===== FIXED MCQ EXTRACTOR =====
 def extract_mcq(text):
     text = clean_text(text)
     lines = text.split("\n")
 
     questions = []
-    current = []
-    option_count = 0
+    current_q = []
+    options = []
 
     for line in lines:
         line = line.strip()
@@ -65,23 +65,27 @@ def extract_mcq(text):
         if not line:
             continue
 
-        # detect options (a) / a) / A. / (1)
+        # detect option (a), a), A., (1)
         if re.match(r"^\(?[a-dA-D1-4][\)\.\-]", line):
-            current.append(line)
-            option_count += 1
+            options.append(line)
+
+            # 4 options complete → save question
+            if len(options) == 4:
+                if current_q:
+                    full_q = current_q + options
+                    questions.append("\n".join(full_q))
+
+                current_q = []
+                options = []
+
             continue
 
-        # अगर 2+ options मिल गए तो question complete
-        if option_count >= 2:
-            questions.append("\n".join(current))
-            current = []
-            option_count = 0
+        # new question line
+        if current_q and options:
+            # अगर बीच में कुछ गड़बड़ है → reset options
+            options = []
 
-        current.append(line)
-
-    # last question
-    if current and option_count >= 2:
-        questions.append("\n".join(current))
+        current_q = [line]
 
     return questions
 
@@ -132,7 +136,6 @@ async def make_ppt(update, questions):
 
         box = slide.shapes.add_textbox(Inches(3), Inches(3), Inches(8), Inches(1))
         tf = box.text_frame
-
         p = tf.paragraphs[0]
         p.text = "❌ No MCQ Found"
         style_question(p)
@@ -169,7 +172,6 @@ async def make_ppt(update, questions):
 
     pdf_file = convert_ppt_to_pdf(ppt_file)
 
-    # send files
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
@@ -230,7 +232,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     all_text += text + "\n"
 
-        # fallback OCR
         if len(all_text.strip()) < 50:
             all_text = ""
             for i in range(1, 50):
