@@ -7,3 +7,4 @@ Pillow
 pdf2image
 pdfplumber
 pytesseract
+firebase-admin
