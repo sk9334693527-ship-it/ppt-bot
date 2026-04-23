@@ -11,8 +11,9 @@ from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
 
 from pptx import Presentation
-from pptx.util import Inches, Pt
+from pptx.util import Inches
 from pptx.dml.color import RGBColor
+from pptx.enum.text import MSO_AUTO_SIZE
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -29,6 +30,22 @@ gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
+
+# ===== QUESTION EXTRACTOR (🔥 FIX) =====
+def extract_questions(text):
+    pattern = r"(प्रश्न\s*\d+.*?)(?=प्रश्न\s*\d+|$)"
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    if matches:
+        return [m.strip() for m in matches]
+
+    pattern2 = r"(Q\.?\s*\d+.*?)(?=Q\.?\s*\d+|$)"
+    matches2 = re.findall(pattern2, text, re.DOTALL)
+
+    if matches2:
+        return [m.strip() for m in matches2]
+
+    return [text.strip()]
 
 # ===== AICREDITS VISION =====
 def generate_vision(image_path):
@@ -49,7 +66,7 @@ def generate_vision(image_path):
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "इस image से MCQ बनाओ"},
+                        {"type": "text", "text": "इस image से साफ और पूरा MCQ बनाओ"},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -69,7 +86,7 @@ def generate_vision(image_path):
             return res.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
-        print("ERROR:", e)
+        print("VISION ERROR:", e)
 
     return ""
 
@@ -90,7 +107,7 @@ def generate_text(prompt):
             ]
         }
 
-        res = requests.post(url, headers=headers, json=data)
+        res = requests.post(url, headers=headers, json=data, timeout=30)
 
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"]
@@ -107,14 +124,19 @@ async def make_ppt(update, questions, image_path=None):
     for i, q in enumerate(questions, 1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-        # IMAGE ADD (LEFT SIDE)
+        # IMAGE LEFT
         if image_path and os.path.exists(image_path):
             slide.shapes.add_picture(image_path, Inches(0.5), Inches(1), width=Inches(5))
 
-        # TEXT BOX (RIGHT SIDE)
+        # TEXT RIGHT
         box = slide.shapes.add_textbox(Inches(6), Inches(1), Inches(6), Inches(5))
         tf = box.text_frame
-        tf.text = f"{i}. {q}"
+        tf.clear()
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+        p = tf.paragraphs[0]
+        p.text = f"{i}. {q}"
 
     prs.save("output.pptx")
 
@@ -130,10 +152,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TEXT
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = generate_text(update.message.text)
-    questions = re.split(r"\n(?=प्रश्न)", res)
+
+    if not res:
+        await update.message.reply_text("❌ AI fail")
+        return
+
+    questions = extract_questions(res)
     await make_ppt(update, questions)
 
-# IMAGE (🔥 VISION + IMAGE IN PPT)
+# IMAGE (VISION)
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -147,9 +174,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ AI fail")
         return
 
-    questions = re.split(r"\n(?=प्रश्न)", res)
+    questions = extract_questions(res)
 
-    # 👉 PPT में image भी जाएगा
     await make_ppt(update, questions, image_path=path)
 
     os.remove(path)
@@ -171,7 +197,11 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     res = generate_text(text)
 
-    questions = re.split(r"\n(?=प्रश्न)", res)
+    if not res:
+        await update.message.reply_text("❌ AI fail")
+        return
+
+    questions = extract_questions(res)
 
     await make_ppt(update, questions)
 
