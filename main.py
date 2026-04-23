@@ -5,7 +5,7 @@ import pdfplumber
 import pytesseract
 import google.generativeai as genai
 from groq import Groq
-import requests   # ✅ NEW (AICredits)
+import requests   # AICredits
 
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
@@ -34,7 +34,7 @@ GROQ_KEYS = [
     os.getenv("GROQ_API_KEY2"),
 ]
 
-# ✅ AICredits Key
+# AICredits key
 AICREDITS_KEY = os.getenv("AICREDITS_API_KEY")
 
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
@@ -59,7 +59,7 @@ def enhance_image(img):
 # ===== AICREDITS =====
 def generate_aicredits(prompt):
     try:
-        url = "https://api.aicredits.ai/v1/chat/completions"
+        url = "https://api.aicredits.in/v1/chat/completions"  # ✅ ONLY CHANGE
 
         headers = {
             "Authorization": f"Bearer {AICREDITS_KEY}",
@@ -85,14 +85,13 @@ def generate_aicredits(prompt):
 
 # ===== AI =====
 def generate_ai(prompt):
-
-    # ✅ 1. AICredits (FIRST PRIORITY)
+    # 1. AICredits
     if AICREDITS_KEY:
         res = generate_aicredits(prompt)
         if res:
             return res
 
-    # ✅ 2. Gemini
+    # 2. Gemini
     for model in gemini_models:
         try:
             res = model.generate_content(prompt)
@@ -101,7 +100,7 @@ def generate_ai(prompt):
         except:
             continue
 
-    # ✅ 3. Groq
+    # 3. Groq
     for client in groq_clients:
         try:
             chat = client.chat.completions.create(
