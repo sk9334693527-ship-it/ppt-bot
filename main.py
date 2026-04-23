@@ -5,7 +5,7 @@ import pdfplumber
 import pytesseract
 import google.generativeai as genai
 from groq import Groq
-import requests   # AICredits
+import requests
 
 from PIL import Image, ImageEnhance, ImageFilter
 from pdf2image import convert_from_path
@@ -17,6 +17,19 @@ from pptx.enum.text import MSO_AUTO_SIZE
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# 🔥 NEW: Firebase
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+firebase_json = os.getenv("FIREBASE_CREDENTIALS")
+cred = credentials.Certificate(json.loads(firebase_json))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# 🔥 ADMIN
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -34,20 +47,28 @@ GROQ_KEYS = [
     os.getenv("GROQ_API_KEY2"),
 ]
 
-# AICredits key
 AICREDITS_KEY = os.getenv("AICREDITS_API_KEY")
 
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 
-# Gemini models
 gemini_models = []
 for key in GEMINI_KEYS:
     genai.configure(api_key=key)
     gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
 
-# Groq clients
 groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
+
+# ===== SAVE USER =====
+def save_user(user):
+    try:
+        db.collection("users").document(str(user.id)).set({
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name
+        }, merge=True)
+    except Exception as e:
+        print("Firebase error:", e)
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
@@ -59,39 +80,29 @@ def enhance_image(img):
 # ===== AICREDITS =====
 def generate_aicredits(prompt):
     try:
-        url = "https://api.aicredits.in/v1/chat/completions"  # ✅ ONLY CHANGE
-
+        url = "https://api.aicredits.in/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {AICREDITS_KEY}",
             "Content-Type": "application/json"
         }
-
         data = {
             "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
+            "messages": [{"role": "user", "content": prompt}]
         }
-
         res = requests.post(url, headers=headers, json=data, timeout=30)
-
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"]
-
     except:
         pass
-
     return ""
 
 # ===== AI =====
 def generate_ai(prompt):
-    # 1. AICredits
     if AICREDITS_KEY:
         res = generate_aicredits(prompt)
         if res:
             return res
 
-    # 2. Gemini
     for model in gemini_models:
         try:
             res = model.generate_content(prompt)
@@ -100,7 +111,6 @@ def generate_ai(prompt):
         except:
             continue
 
-    # 3. Groq
     for client in groq_clients:
         try:
             chat = client.chat.completions.create(
@@ -116,41 +126,33 @@ def generate_ai(prompt):
 # ===== PROMPT =====
 FIX_PROMPT = """
 तुम एक हिंदी MCQ generator हो।
-
 काम:
 1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
 2. मात्रा की गलती सुधारो
 3. प्रश्न का अर्थ मत बदलो
 4. MCQ format में बदलो
-
 FORMAT STRICT:
 प्रश्न ...
 A)
 B)
 C)
 D)
-
 कोई extra text नहीं देना।
-
 TEXT:
 """
 
 # ===== PPT → PDF =====
 def convert_ppt_to_pdf(ppt_path):
     subprocess.run([
-        "libreoffice",
-        "--headless",
+        "libreoffice", "--headless",
         "--convert-to", "pdf",
-        "--outdir", ".",
-        ppt_path
+        "--outdir", ".", ppt_path
     ], check=True)
-
     return ppt_path.replace(".pptx", ".pdf")
 
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
-
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
@@ -177,11 +179,9 @@ async def make_ppt(update, questions):
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
-
         box = slide.shapes.add_textbox(Inches(3.5), Inches(3), Inches(9), Inches(1))
         tf = box.text_frame
         setup_tf(tf)
-
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
         style_question(p)
@@ -230,11 +230,13 @@ async def make_ppt(update, questions):
 
 # ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    save_user(update.effective_user)
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    fixed = generate_ai(FIX_PROMPT + update.message.text)
+    save_user(update.effective_user)
 
+    fixed = generate_ai(FIX_PROMPT + update.message.text)
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
         return
@@ -243,8 +245,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await make_ppt(update, questions)
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📸 Image process ho rahi hai...")
+    save_user(update.effective_user)
 
+    await update.message.reply_text("📸 Image process ho rahi hai...")
     photo = update.message.photo[-1]
     file = await photo.get_file()
 
@@ -260,7 +263,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     fixed = generate_ai(FIX_PROMPT + text)
-
     if not fixed:
         await update.message.reply_text("❌ AI fail ho gaya")
         return
@@ -269,8 +271,9 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await make_ppt(update, questions)
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📄 PDF process ho raha hai...")
+    save_user(update.effective_user)
 
+    await update.message.reply_text("📄 PDF process ho raha hai...")
     doc = update.message.document
     file = await doc.get_file()
 
@@ -298,7 +301,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     all_text += text + "\n"
 
         fixed = generate_ai(FIX_PROMPT + all_text)
-
         if not fixed:
             await update.message.reply_text("❌ AI fail ho gaya")
             return
@@ -313,11 +315,28 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(path):
             os.remove(path)
 
+# ===== ADMIN COMMAND =====
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    users = db.collection("users").stream()
+
+    msg = "👥 Users List:\n\n"
+
+    for u in users:
+        data = u.to_dict()
+        msg += f"ID: {data.get('user_id')}\n"
+        msg += f"Username: {data.get('username')}\n\n"
+
+    await update.message.reply_text(msg[:4000])
+
 # ===== MAIN =====
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("users", admin_users))  # 👈 admin
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
