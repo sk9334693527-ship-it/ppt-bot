@@ -32,248 +32,349 @@ db = firestore.client()
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
-# 🔥 CONTACT
-CONTACT_NUMBER = os.getenv("CONTACT_NUMBER", "XXXXXXXXXX")
+# 🔐 Admin sessions
+admin_sessions = set()
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+GEMINI_KEYS = [
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY1"),
+    os.getenv("GEMINI_API_KEY2"),
+    os.getenv("GEMINI_API_KEY3"),
+]
+
+GROQ_KEYS = [
+    os.getenv("GROQ_API_KEY"),
+    os.getenv("GROQ_API_KEY1"),
+    os.getenv("GROQ_API_KEY2"),
+]
+
+AICREDITS_KEY = os.getenv("AICREDITS_API_KEY")
+
+GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
+GROQ_KEYS = [k for k in GROQ_KEYS if k]
+
+gemini_models = []
+for key in GEMINI_KEYS:
+    genai.configure(api_key=key)
+    gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
+
+groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
+
 # ===== SAVE USER =====
 def save_user(user):
-    ref = db.collection("users").document(str(user.id))
-    doc = ref.get()
-
-    if not doc.exists:
-        ref.set({
+    try:
+        db.collection("users").document(str(user.id)).set({
             "user_id": user.id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "credits": 0
-        })
-    else:
-        ref.set({
             "username": user.username,
             "first_name": user.first_name
         }, merge=True)
+    except Exception as e:
+        print("Firebase error:", e)
 
-# ===== CREDIT =====
-def get_user_credit(user_id):
-    doc = db.collection("users").document(str(user_id)).get()
-    if doc.exists:
-        return doc.to_dict().get("credits", 0)
-    return 0
+# ===== IMAGE ENHANCE =====
+def enhance_image(img):
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
 
-def update_user_credit(user_id, amount):
-    db.collection("users").document(str(user_id)).update({"credits": amount})
+# ===== AICREDITS =====
+def generate_aicredits(prompt):
+    try:
+        url = "https://api.aicredits.in/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {AICREDITS_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        res = requests.post(url, headers=headers, json=data, timeout=30)
+        if res.status_code == 200:
+            return res.json()["choices"][0]["message"]["content"]
+    except:
+        pass
+    return ""
 
 # ===== AI =====
 def generate_ai(prompt):
-    try:
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        res = model.generate_content(prompt)
-        return res.text
-    except:
-        return ""
+    if AICREDITS_KEY:
+        res = generate_aicredits(prompt)
+        if res:
+            return res
+
+    for model in gemini_models:
+        try:
+            res = model.generate_content(prompt)
+            if res.text:
+                return res.text
+        except:
+            continue
+
+    for client in groq_clients:
+        try:
+            chat = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama3-70b-8192"
+            )
+            return chat.choices[0].message.content
+        except:
+            continue
+
+    return ""
 
 # ===== PROMPT =====
 FIX_PROMPT = """
 तुम एक हिंदी MCQ generator हो।
+काम:
+1. दिए गए टेक्स्ट से केवल प्रश्न निकालो
+2. मात्रा की गलती सुधारो
+3. प्रश्न का अर्थ मत बदलो
+4. MCQ format में बदलो
+FORMAT STRICT:
+प्रश्न ...
+A)
+B)
+C)
+D)
+कोई extra text नहीं देना।
 TEXT:
 """
+
+# ===== PPT → PDF =====
+def convert_ppt_to_pdf(ppt_path):
+    subprocess.run([
+        "libreoffice", "--headless",
+        "--convert-to", "pdf",
+        "--outdir", ".", ppt_path
+    ], check=True)
+    return ppt_path.replace(".pptx", ".pdf")
 
 # ===== PPT =====
 async def make_ppt(update, questions):
     prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
 
-    for i, q in enumerate(questions, start=1):
+    def set_black_background(slide):
+        bg = slide.background
+        fill = bg.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(0, 0, 0)
+
+    def setup_tf(tf):
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+    def style_question(p):
+        for run in p.runs:
+            run.font.size = Pt(24)
+            run.font.color.rgb = RGBColor(255, 255, 0)
+
+    def style_option(p):
+        for run in p.runs:
+            run.font.size = Pt(24)
+            run.font.color.rgb = RGBColor(255, 255, 255)
+
+    if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
-        box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(5))
+        set_black_background(slide)
+        box = slide.shapes.add_textbox(Inches(3.5), Inches(3), Inches(9), Inches(1))
         tf = box.text_frame
-        tf.text = q
+        setup_tf(tf)
+        p = tf.paragraphs[0]
+        p.text = "❌ No Data"
+        style_question(p)
+
+    else:
+        for i, q in enumerate(questions, start=1):
+            lines = [l.strip() for l in q.split("\n") if l.strip()]
+            if not lines:
+                continue
+
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            set_black_background(slide)
+
+            box = slide.shapes.add_textbox(Inches(3.5), Inches(1), Inches(9), Inches(5))
+            tf = box.text_frame
+            tf.clear()
+            setup_tf(tf)
+
+            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
+            question_text = f"{i}. {question_text}"
+
+            p = tf.paragraphs[0]
+            p.text = question_text
+            style_question(p)
+
+            tf.add_paragraph().text = ""
+
+            for opt in lines[1:]:
+                p = tf.add_paragraph()
+                p.text = opt
+                style_option(p)
 
     ppt_file = "output.pptx"
     prs.save(ppt_file)
 
+    pdf_file = convert_ppt_to_pdf(ppt_file)
+
     with open(ppt_file, "rb") as f:
         await update.message.reply_document(InputFile(f))
 
+    with open(pdf_file, "rb") as f:
+        await update.message.reply_document(InputFile(f))
+
     os.remove(ppt_file)
+    os.remove(pdf_file)
 
-# ===== START =====
+# ===== HANDLERS =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    save_user(user)
+    save_user(update.effective_user)
+    await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
 
-    credit = get_user_credit(user.id)
+# 🔐 ADMIN LOGIN
+async def admin_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    await update.message.reply_text(
-        f"👤 ID: {user.id}\n"
-        f"👤 Name: {user.first_name}\n"
-        f"🔗 Username: @{user.username}\n"
-        f"💰 Credit: {credit}\n\n"
-        f"📞 Credit ke liye call kare:\n{CONTACT_NUMBER}\n\n"
-        f"👉 PPT banane ke liye /objective use kare"
-    )
+    if user_id in admin_sessions:
+        await update.message.reply_text("✅ Admin Panel Open\n\n/users - Users list\n/logout - Logout")
+        return
 
-# ===== OBJECTIVE =====
-async def objective_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["objective_mode"] = True
-    await update.message.reply_text("✅ Objective mode ON\nAb file/text bhejo")
+    await update.message.reply_text("🔐 Password bhejo:")
+    context.user_data["awaiting_admin_password"] = True
 
-# ===== TEXT =====
+# 🔐 LOGOUT
+async def admin_logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id in admin_sessions:
+        admin_sessions.remove(user_id)
+        await update.message.reply_text("🚪 Logout ho gaye")
+    else:
+        await update.message.reply_text("❌ Pehle login karo /admin")
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
-    # ❌ objective check
-    if not context.user_data.get("objective_mode"):
-        await update.message.reply_text("❌ Pehle /objective use karo")
+    # 🔐 Password check
+    if context.user_data.get("awaiting_admin_password"):
+        if update.message.text == ADMIN_PASSWORD:
+            admin_sessions.add(update.effective_user.id)
+            context.user_data["awaiting_admin_password"] = False
+            await update.message.reply_text("✅ Login Successful\n\n/users - Users list\n/logout - Logout")
+        else:
+            await update.message.reply_text("❌ Wrong Password")
         return
 
     fixed = generate_ai(FIX_PROMPT + update.message.text)
+    if not fixed:
+        await update.message.reply_text("❌ AI fail ho gaya")
+        return
+
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
-    questions = [q.strip() for q in questions if q.strip()]
-    if not questions:
-        await update.message.reply_text("❌ No question")
-        return
-
-    slides = len(questions)
-    cost = slides * 25
-
-    user_id = update.effective_user.id
-    credit = get_user_credit(user_id)
-
-    if credit < cost:
-        await update.message.reply_text(
-            f"❌ Credit kam hai\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
-        )
-        return
-
-    new_credit = credit - cost
-    update_user_credit(user_id, new_credit)
-
     await make_ppt(update, questions)
 
-    await update.message.reply_text(
-        f"✅ PPT Ready\n\n📊 Slides: {slides}\n💰 Used: {cost}\n💳 Left: {new_credit}"
-    )
-
-    context.user_data["objective_mode"] = False
-
-# ===== IMAGE =====
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
-    if not context.user_data.get("objective_mode"):
-        await update.message.reply_text("❌ Pehle /objective use karo")
-        return
-
-    await update.message.reply_text("📸 Processing...")
-
+    await update.message.reply_text("📸 Image process ho rahi hai...")
     photo = update.message.photo[-1]
     file = await photo.get_file()
 
     path = "img.jpg"
     await file.download_to_drive(path)
 
-    img = Image.open(path)
+    img = enhance_image(Image.open(path))
     text = pytesseract.image_to_string(img, lang="hin+eng")
     os.remove(path)
 
+    if not text or len(text.strip()) < 20:
+        await update.message.reply_text("❌ Image se text nahi nikla")
+        return
+
     fixed = generate_ai(FIX_PROMPT + text)
+    if not fixed:
+        await update.message.reply_text("❌ AI fail ho gaya")
+        return
+
     questions = re.split(r"\n(?=प्रश्न)", fixed)
-
-    questions = [q.strip() for q in questions if q.strip()]
-    if not questions:
-        await update.message.reply_text("❌ No question")
-        return
-
-    slides = len(questions)
-    cost = slides * 25
-
-    user_id = update.effective_user.id
-    credit = get_user_credit(user_id)
-
-    if credit < cost:
-        await update.message.reply_text(
-            f"❌ Credit kam hai\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
-        )
-        return
-
-    new_credit = credit - cost
-    update_user_credit(user_id, new_credit)
-
     await make_ppt(update, questions)
 
-    await update.message.reply_text(
-        f"✅ PPT Ready\n\n📊 Slides: {slides}\n💰 Used: {cost}\n💳 Left: {new_credit}"
-    )
-
-    context.user_data["objective_mode"] = False
-
-# ===== PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
-    if not context.user_data.get("objective_mode"):
-        await update.message.reply_text("❌ Pehle /objective use karo")
-        return
-
-    await update.message.reply_text("📄 Processing PDF...")
-
+    await update.message.reply_text("📄 PDF process ho raha hai...")
     doc = update.message.document
     file = await doc.get_file()
 
     path = "file.pdf"
     await file.download_to_drive(path)
 
-    text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text += t
+    try:
+        all_text = ""
 
-    os.remove(path)
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    all_text += text + "\n"
 
-    fixed = generate_ai(FIX_PROMPT + text)
-    questions = re.split(r"\n(?=प्रश्न)", fixed)
+        if len(all_text.strip()) < 50:
+            all_text = ""
+            for i in range(1, 50):
+                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                if not images:
+                    break
+                img = enhance_image(images[0])
+                text = pytesseract.image_to_string(img, lang="hin+eng")
+                if text:
+                    all_text += text + "\n"
 
-    questions = [q.strip() for q in questions if q.strip()]
-    if not questions:
-        await update.message.reply_text("❌ No question")
+        fixed = generate_ai(FIX_PROMPT + all_text)
+        if not fixed:
+            await update.message.reply_text("❌ AI fail ho gaya")
+            return
+
+        questions = re.split(r"\n(?=प्रश्न)", fixed)
+        await make_ppt(update, questions)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ ERROR: {str(e)}")
+
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+# 🔥 ADMIN USERS
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in admin_sessions:
+        await update.message.reply_text("❌ Admin login karo /admin")
         return
 
-    slides = len(questions)
-    cost = slides * 25
+    users = db.collection("users").stream()
 
-    user_id = update.effective_user.id
-    credit = get_user_credit(user_id)
+    msg = "👥 Users List:\n\n"
 
-    if credit < cost:
-        await update.message.reply_text(
-            f"❌ Credit kam hai\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
-        )
-        return
+    for u in users:
+        data = u.to_dict()
+        msg += f"ID: {data.get('user_id')}\n"
+        msg += f"Username: {data.get('username')}\n\n"
 
-    new_credit = credit - cost
-    update_user_credit(user_id, new_credit)
-
-    await make_ppt(update, questions)
-
-    await update.message.reply_text(
-        f"✅ PPT Ready\n\n📊 Slides: {slides}\n💰 Used: {cost}\n💳 Left: {new_credit}"
-    )
-
-    context.user_data["objective_mode"] = False
+    await update.message.reply_text(msg[:4000])
 
 # ===== MAIN =====
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("objective", objective_mode))
+    app.add_handler(CommandHandler("admin", admin_login))
+    app.add_handler(CommandHandler("logout", admin_logout))
+    app.add_handler(CommandHandler("users", admin_users))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
