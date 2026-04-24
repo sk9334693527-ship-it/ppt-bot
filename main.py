@@ -316,24 +316,55 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     try:
-        all_text = ""
+        text_pdfplumber = ""
+        text_ocr = ""
 
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    all_text += text + "\n"
+        # Try extracting text using pdfplumber
+        try:
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        text_pdfplumber += t + "\n"
+        except Exception as e:
+            text_pdfplumber = ""
 
-        if len(all_text.strip()) < 50:
-            all_text = ""
-            for i in range(1, 50):
+        # Try extracting text using OCR on first 50 pages
+        try:
+            for i in range(1, 51):
                 images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
                 if not images:
                     break
                 img = enhance_image(images[0])
-                text = pytesseract.image_to_string(img, lang="hin+eng")
-                if text:
-                    all_text += text + "\n"
+                t = pytesseract.image_to_string(img, lang="hin+eng")
+                if t:
+                    text_ocr += t + "\n"
+        except Exception as e:
+            text_ocr = ""
+
+        # Use the longer text
+        all_text = text_pdfplumber if len(text_pdfplumber.strip()) > len(text_ocr.strip()) else text_ocr
+
+        # Fallback: if still not enough, try OCR on all pages
+        if len(all_text.strip()) < 50:
+            all_text = ""
+            try:
+                with pdfplumber.open(path) as pdf:
+                    total_pages = len(pdf.pages)
+                for i in range(1, total_pages + 1):
+                    images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                    if not images:
+                        break
+                    img = enhance_image(images[0])
+                    t = pytesseract.image_to_string(img, lang="hin+eng")
+                    if t:
+                        all_text += t + "\n"
+            except Exception as e:
+                pass
+
+        if len(all_text.strip()) < 10:
+            await update.message.reply_text("❌ PDF se text nahi nikla")
+            return
 
         fixed = generate_ai(FIX_PROMPT + all_text)
         if not fixed:
