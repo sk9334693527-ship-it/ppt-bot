@@ -18,7 +18,6 @@ from pptx.enum.text import MSO_AUTO_SIZE
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 🔥 Firebase
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
@@ -28,37 +27,13 @@ cred = credentials.Certificate(json.loads(firebase_json))
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# 🔥 ADMIN
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CONTACT_NUMBER = os.getenv("CONTACT_NUMBER", "XXXXXXXXXX")
 
 admin_sessions = set()
 
-# ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CONTACT_NUMBER = os.getenv("CONTACT_NUMBER", "XXXXXXXXXX")
-
-# ===== AI KEYS =====
-GEMINI_KEYS = [
-    os.getenv("GEMINI_API_KEY"),
-    os.getenv("GEMINI_API_KEY1"),
-]
-
-GROQ_KEYS = [
-    os.getenv("GROQ_API_KEY"),
-]
-
-AICREDITS_KEY = os.getenv("AICREDITS_API_KEY")
-
-GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
-GROQ_KEYS = [k for k in GROQ_KEYS if k]
-
-gemini_models = []
-for key in GEMINI_KEYS:
-    genai.configure(api_key=key)
-    gemini_models.append(genai.GenerativeModel("gemini-2.5-flash"))
-
-groq_clients = [Groq(api_key=k) for k in GROQ_KEYS]
 
 # ===== USER SAVE =====
 def save_user(user):
@@ -90,30 +65,15 @@ def update_user_credit(user_id, amount):
 
 # ===== AI =====
 def generate_ai(prompt):
-    for model in gemini_models:
-        try:
-            res = model.generate_content(prompt)
-            if res.text:
-                return res.text
-        except:
-            continue
+    try:
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        res = model.generate_content(prompt)
+        return res.text
+    except:
+        return ""
 
-    for client in groq_clients:
-        try:
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama3-70b-8192"
-            )
-            return chat.choices[0].message.content
-        except:
-            continue
-
-    return ""
-
-# ===== PROMPT =====
-FIX_PROMPT = """तुम एक हिंदी MCQ generator हो...
-TEXT:
-"""
+FIX_PROMPT = "MCQ generate karo:\n"
 
 # ===== PPT =====
 async def make_ppt(update, questions):
@@ -146,7 +106,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 Username: @{user.username}\n"
         f"💰 Credit: {credit}\n\n"
         f"📞 Credit ke liye call kare:\n{CONTACT_NUMBER}\n\n"
-        f"👉 PPT banane ke liye /objective use kare"
+        f"👉 PPT ke liye /objective use karo"
     )
 
     await update.message.reply_text(msg)
@@ -154,16 +114,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== OBJECTIVE =====
 async def objective_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["objective_mode"] = True
-    await update.message.reply_text("✅ Mode ON — ab data bhejo")
+    await update.message.reply_text("✅ Mode ON — ab bhejo")
 
 # ===== ADMIN =====
 async def admin_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Password bhejo")
     context.user_data["admin_pass"] = True
-
-async def admin_logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_sessions.discard(update.effective_user.id)
-    await update.message.reply_text("Logout")
 
 async def add_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in admin_sessions:
@@ -197,7 +153,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # objective check
     if not context.user_data.get("objective_mode"):
-        await update.message.reply_text("❌ /objective use karo")
+        await update.message.reply_text("❌ Pehle /objective use karo")
         return
 
     fixed = generate_ai(FIX_PROMPT + update.message.text)
@@ -213,12 +169,125 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     credit = get_user_credit(user.id)
 
     if credit < cost:
-        await update.message.reply_text(f"❌ Credit kam\nNeed {cost}, have {credit}")
+        await update.message.reply_text(
+            f"❌ Credit kam\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
+        )
         return
 
-    update_user_credit(user.id, credit - cost)
+    new_credit = credit - cost
+    update_user_credit(user.id, new_credit)
 
     await make_ppt(update, questions)
+
+    await update.message.reply_text(
+        f"✅ PPT Ready\nSlides: {slides}\nUsed: {cost}\nLeft: {new_credit}"
+    )
+
+    context.user_data["objective_mode"] = False
+
+# ===== IMAGE =====
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+
+    if not context.user_data.get("objective_mode"):
+        await update.message.reply_text("❌ Pehle /objective use karo")
+        return
+
+    await update.message.reply_text("📸 Processing...")
+
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+
+    path = "img.jpg"
+    await file.download_to_drive(path)
+
+    img = Image.open(path)
+    text = pytesseract.image_to_string(img)
+
+    os.remove(path)
+
+    fixed = generate_ai(FIX_PROMPT + text)
+    questions = [q.strip() for q in re.split(r"\n(?=प्रश्न)", fixed) if q.strip()]
+
+    if not questions:
+        await update.message.reply_text("❌ No question")
+        return
+
+    slides = len(questions)
+    cost = slides * 25
+
+    credit = get_user_credit(user.id)
+
+    if credit < cost:
+        await update.message.reply_text(
+            f"❌ Credit kam\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
+        )
+        return
+
+    new_credit = credit - cost
+    update_user_credit(user.id, new_credit)
+
+    await make_ppt(update, questions)
+
+    await update.message.reply_text(
+        f"✅ PPT Ready\nSlides: {slides}\nUsed: {cost}\nLeft: {new_credit}"
+    )
+
+    context.user_data["objective_mode"] = False
+
+# ===== PDF =====
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+
+    if not context.user_data.get("objective_mode"):
+        await update.message.reply_text("❌ Pehle /objective use karo")
+        return
+
+    await update.message.reply_text("📄 Processing PDF...")
+
+    doc = update.message.document
+    file = await doc.get_file()
+
+    path = "file.pdf"
+    await file.download_to_drive(path)
+
+    text = ""
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                text += t
+
+    os.remove(path)
+
+    fixed = generate_ai(FIX_PROMPT + text)
+    questions = [q.strip() for q in re.split(r"\n(?=प्रश्न)", fixed) if q.strip()]
+
+    if not questions:
+        await update.message.reply_text("❌ No question")
+        return
+
+    slides = len(questions)
+    cost = slides * 25
+
+    credit = get_user_credit(user.id)
+
+    if credit < cost:
+        await update.message.reply_text(
+            f"❌ Credit kam\nSlides: {slides}\nNeed: {cost}\nHave: {credit}"
+        )
+        return
+
+    new_credit = credit - cost
+    update_user_credit(user.id, new_credit)
+
+    await make_ppt(update, questions)
+
+    await update.message.reply_text(
+        f"✅ PPT Ready\nSlides: {slides}\nUsed: {cost}\nLeft: {new_credit}"
+    )
 
     context.user_data["objective_mode"] = False
 
@@ -229,10 +298,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("objective", objective_mode))
     app.add_handler(CommandHandler("admin", admin_login))
-    app.add_handler(CommandHandler("logout", admin_logout))
     app.add_handler(CommandHandler("addcredit", add_credit))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
 
     print("🚀 Running...")
     app.run_polling()
