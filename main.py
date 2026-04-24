@@ -76,10 +76,17 @@ def save_user(user):
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.5)
-    img = img.filter(ImageFilter.SHARPEN)
-    return img
+    # Try multiple enhancements for better OCR
+    img1 = img.convert("L")
+    img1 = ImageEnhance.Contrast(img1).enhance(2.5)
+    img1 = img1.filter(ImageFilter.SHARPEN)
+
+    img2 = img.convert("L")
+    img2 = ImageEnhance.Brightness(img2).enhance(1.2)
+    img2 = ImageEnhance.Contrast(img2).enhance(3.0)
+    img2 = img2.filter(ImageFilter.SHARPEN)
+
+    return [img1, img2, img]  # Return list: enhanced, more enhanced, and original
 
 # ===== AICREDITS =====
 def generate_aicredits(prompt):
@@ -335,13 +342,14 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with pdfplumber.open(path) as pdf:
                 total_pages = len(pdf.pages)
             for i in range(1, total_pages + 1):
-                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                images = convert_from_path(path, dpi=350, first_page=i, last_page=i)
                 if not images:
                     break
-                img = enhance_image(images[0])
-                t = pytesseract.image_to_string(img, lang="hin+eng")
-                if t:
-                    text_ocr += t + "\n"
+                img_variants = enhance_image(images[0])
+                for img in img_variants:
+                    t = pytesseract.image_to_string(img, lang="hin+eng")
+                    if t:
+                        text_ocr += t + "\n"
         except Exception as e:
             text_ocr = ""
 
