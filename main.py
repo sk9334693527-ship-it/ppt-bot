@@ -180,6 +180,7 @@ async def make_ppt(update, questions):
             run.font.size = Pt(24)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
+
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
@@ -189,10 +190,9 @@ async def make_ppt(update, questions):
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
         style_question(p)
-
     else:
-        for i, q in enumerate(questions, start=1):
-            lines = [l.strip() for l in q.split("\n") if l.strip()]
+        for q in questions:
+            lines = [l.rstrip() for l in q.split("\n") if l.strip()]
             if not lines:
                 continue
 
@@ -204,8 +204,9 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
-            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
-            question_text = f"{i}. {question_text}"
+            # Preserve original question text, remove only leading numbering if present
+            question_text = lines[0]
+            question_text = re.sub(r"^\d+\.\s*", "", question_text)  # Remove leading number if present
 
             p = tf.paragraphs[0]
             p.text = question_text
@@ -329,9 +330,11 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             text_pdfplumber = ""
 
-        # Try extracting text using OCR on first 50 pages
+        # Try extracting text using OCR on ALL pages (not just 50)
         try:
-            for i in range(1, 51):
+            with pdfplumber.open(path) as pdf:
+                total_pages = len(pdf.pages)
+            for i in range(1, total_pages + 1):
                 images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
                 if not images:
                     break
@@ -345,30 +348,20 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Use the longer text
         all_text = text_pdfplumber if len(text_pdfplumber.strip()) > len(text_ocr.strip()) else text_ocr
 
-        # Fallback: if still not enough, try OCR on all pages
-        if len(all_text.strip()) < 50:
-            all_text = ""
-            try:
-                with pdfplumber.open(path) as pdf:
-                    total_pages = len(pdf.pages)
-                for i in range(1, total_pages + 1):
-                    images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
-                    if not images:
-                        break
-                    img = enhance_image(images[0])
-                    t = pytesseract.image_to_string(img, lang="hin+eng")
-                    if t:
-                        all_text += t + "\n"
-            except Exception as e:
-                pass
-
+        # If still not enough, use whatever is available
         if len(all_text.strip()) < 10:
-            await update.message.reply_text("❌ PDF se text nahi nikla")
-            return
+            all_text = text_pdfplumber + "\n" + text_ocr
 
+        # Send extracted text to user for debugging (first 4000 chars)
+        if all_text.strip():
+            await update.message.reply_text("📝 Extracted text (preview):\n" + all_text[:4000])
+        else:
+            await update.message.reply_text("❌ PDF se text nahi nikla (OCR bhi fail)")
+
+        # Even if text is small, try to generate PPT
         fixed = generate_ai(FIX_PROMPT + all_text)
         if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya")
+            await update.message.reply_text("❌ AI fail ho gaya (shayad text quality low hai)")
             return
 
         questions = re.split(r"\n(?=प्रश्न)", fixed)
