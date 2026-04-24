@@ -324,56 +324,63 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     try:
-        text_pdfplumber = ""
-        text_ocr = ""
+        # Extract each page as image, OCR each, and make one slide per page
+        with pdfplumber.open(path) as pdf:
+            total_pages = len(pdf.pages)
 
-        # Try extracting text using pdfplumber
-        try:
-            with pdfplumber.open(path) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        text_pdfplumber += t + "\n"
-        except Exception as e:
-            text_pdfplumber = ""
+        page_texts = []
+        for i in range(1, total_pages + 1):
+            images = convert_from_path(path, dpi=350, first_page=i, last_page=i)
+            if not images:
+                continue
+            img_variants = enhance_image(images[0])
+            page_text = ""
+            for img in img_variants:
+                t = pytesseract.image_to_string(img, lang="hin+eng")
+                if t and len(t.strip()) > len(page_text.strip()):
+                    page_text = t
+            page_texts.append(page_text.strip())
 
-        # Try extracting text using OCR on ALL pages (not just 50)
-        try:
-            with pdfplumber.open(path) as pdf:
-                total_pages = len(pdf.pages)
-            for i in range(1, total_pages + 1):
-                images = convert_from_path(path, dpi=350, first_page=i, last_page=i)
-                if not images:
-                    break
-                img_variants = enhance_image(images[0])
-                for img in img_variants:
-                    t = pytesseract.image_to_string(img, lang="hin+eng")
-                    if t:
-                        text_ocr += t + "\n"
-        except Exception as e:
-            text_ocr = ""
-
-        # Use the longer text
-        all_text = text_pdfplumber if len(text_pdfplumber.strip()) > len(text_ocr.strip()) else text_ocr
-
-        # If still not enough, use whatever is available
-        if len(all_text.strip()) < 10:
-            all_text = text_pdfplumber + "\n" + text_ocr
-
-        # Send extracted text to user for debugging (first 4000 chars)
-        if all_text.strip():
-            await update.message.reply_text("📝 Extracted text (preview):\n" + all_text[:4000])
+        # Send preview to user
+        preview = "\n---\n".join(page_texts)[:4000]
+        if preview.strip():
+            await update.message.reply_text("📝 Extracted text (preview):\n" + preview)
         else:
             await update.message.reply_text("❌ PDF se text nahi nikla (OCR bhi fail)")
 
-        # Even if text is small, try to generate PPT
-        fixed = generate_ai(FIX_PROMPT + all_text)
-        if not fixed:
-            await update.message.reply_text("❌ AI fail ho gaya (shayad text quality low hai)")
-            return
+        # Make one slide per page's text (no AI, just raw text)
+        if any(page_texts):
+            # Use a custom PPT function for raw text
+            prs = Presentation()
+            prs.slide_width = Inches(13.33)
+            prs.slide_height = Inches(7.5)
 
-        questions = re.split(r"\n(?=प्रश्न)", fixed)
-        await make_ppt(update, questions)
+            def set_black_background(slide):
+                bg = slide.background
+                fill = bg.fill
+                fill.solid()
+                fill.fore_color.rgb = RGBColor(0, 0, 0)
+
+            for idx, txt in enumerate(page_texts, 1):
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                set_black_background(slide)
+                box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(12), Inches(6.5))
+                tf = box.text_frame
+                tf.word_wrap = True
+                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                p = tf.paragraphs[0]
+                p.text = txt if txt else "(No text found)"
+                for run in p.runs:
+                    run.font.size = Pt(20)
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+
+            ppt_file = "output_raw.pptx"
+            prs.save(ppt_file)
+            with open(ppt_file, "rb") as f:
+                await update.message.reply_document(InputFile(f))
+            os.remove(ppt_file)
+        else:
+            await update.message.reply_text("❌ Koi bhi page se text nahi nikla.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ ERROR: {str(e)}")
