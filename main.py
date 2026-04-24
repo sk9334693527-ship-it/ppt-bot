@@ -76,17 +76,10 @@ def save_user(user):
 
 # ===== IMAGE ENHANCE =====
 def enhance_image(img):
-    # Try multiple enhancements for better OCR
-    img1 = img.convert("L")
-    img1 = ImageEnhance.Contrast(img1).enhance(2.5)
-    img1 = img1.filter(ImageFilter.SHARPEN)
-
-    img2 = img.convert("L")
-    img2 = ImageEnhance.Brightness(img2).enhance(1.2)
-    img2 = ImageEnhance.Contrast(img2).enhance(3.0)
-    img2 = img2.filter(ImageFilter.SHARPEN)
-
-    return [img1, img2, img]  # Return list: enhanced, more enhanced, and original
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
 
 # ===== AICREDITS =====
 def generate_aicredits(prompt):
@@ -187,7 +180,6 @@ async def make_ppt(update, questions):
             run.font.size = Pt(24)
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-
     if not questions:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         set_black_background(slide)
@@ -197,9 +189,10 @@ async def make_ppt(update, questions):
         p = tf.paragraphs[0]
         p.text = "❌ No Data"
         style_question(p)
+
     else:
-        for q in questions:
-            lines = [l.rstrip() for l in q.split("\n") if l.strip()]
+        for i, q in enumerate(questions, start=1):
+            lines = [l.strip() for l in q.split("\n") if l.strip()]
             if not lines:
                 continue
 
@@ -211,9 +204,8 @@ async def make_ppt(update, questions):
             tf.clear()
             setup_tf(tf)
 
-            # Preserve original question text, remove only leading numbering if present
-            question_text = lines[0]
-            question_text = re.sub(r"^\d+\.\s*", "", question_text)  # Remove leading number if present
+            question_text = re.sub(r"^प्रश्न\s*", "", lines[0])
+            question_text = f"{i}. {question_text}"
 
             p = tf.paragraphs[0]
             p.text = question_text
@@ -324,63 +316,32 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(path)
 
     try:
-        # Extract each page as image, OCR each, and make one slide per page
+        all_text = ""
+
         with pdfplumber.open(path) as pdf:
-            total_pages = len(pdf.pages)
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    all_text += text + "\n"
 
-        page_texts = []
-        for i in range(1, total_pages + 1):
-            images = convert_from_path(path, dpi=350, first_page=i, last_page=i)
-            if not images:
-                continue
-            img_variants = enhance_image(images[0])
-            page_text = ""
-            for img in img_variants:
-                t = pytesseract.image_to_string(img, lang="hin+eng")
-                if t and len(t.strip()) > len(page_text.strip()):
-                    page_text = t
-            page_texts.append(page_text.strip())
+        if len(all_text.strip()) < 50:
+            all_text = ""
+            for i in range(1, 50):
+                images = convert_from_path(path, dpi=300, first_page=i, last_page=i)
+                if not images:
+                    break
+                img = enhance_image(images[0])
+                text = pytesseract.image_to_string(img, lang="hin+eng")
+                if text:
+                    all_text += text + "\n"
 
-        # Send preview to user
-        preview = "\n---\n".join(page_texts)[:4000]
-        if preview.strip():
-            await update.message.reply_text("📝 Extracted text (preview):\n" + preview)
-        else:
-            await update.message.reply_text("❌ PDF se text nahi nikla (OCR bhi fail)")
+        fixed = generate_ai(FIX_PROMPT + all_text)
+        if not fixed:
+            await update.message.reply_text("❌ AI fail ho gaya")
+            return
 
-        # Make one slide per page's text (no AI, just raw text)
-        if any(page_texts):
-            # Use a custom PPT function for raw text
-            prs = Presentation()
-            prs.slide_width = Inches(13.33)
-            prs.slide_height = Inches(7.5)
-
-            def set_black_background(slide):
-                bg = slide.background
-                fill = bg.fill
-                fill.solid()
-                fill.fore_color.rgb = RGBColor(0, 0, 0)
-
-            for idx, txt in enumerate(page_texts, 1):
-                slide = prs.slides.add_slide(prs.slide_layouts[6])
-                set_black_background(slide)
-                box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(12), Inches(6.5))
-                tf = box.text_frame
-                tf.word_wrap = True
-                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-                p = tf.paragraphs[0]
-                p.text = txt if txt else "(No text found)"
-                for run in p.runs:
-                    run.font.size = Pt(20)
-                    run.font.color.rgb = RGBColor(255, 255, 255)
-
-            ppt_file = "output_raw.pptx"
-            prs.save(ppt_file)
-            with open(ppt_file, "rb") as f:
-                await update.message.reply_document(InputFile(f))
-            os.remove(ppt_file)
-        else:
-            await update.message.reply_text("❌ Koi bhi page se text nahi nikla.")
+        questions = re.split(r"\n(?=प्रश्न)", fixed)
+        await make_ppt(update, questions)
 
     except Exception as e:
         await update.message.reply_text(f"❌ ERROR: {str(e)}")
