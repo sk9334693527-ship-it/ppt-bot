@@ -18,7 +18,7 @@ from pptx.enum.text import MSO_AUTO_SIZE
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 🔥 NEW: Firebase
+# 🔥 Firebase
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
@@ -30,6 +30,10 @@ db = firestore.client()
 
 # 🔥 ADMIN
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+# 🔐 Admin sessions
+admin_sessions = set()
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -233,8 +237,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
     await update.message.reply_text("📸 Image | ✍️ Text | 📄 PDF bhejo — PPT + PDF bana dunga")
 
+# 🔐 ADMIN LOGIN
+async def admin_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id in admin_sessions:
+        await update.message.reply_text("✅ Admin Panel Open\n\n/users - Users list\n/logout - Logout")
+        return
+
+    await update.message.reply_text("🔐 Password bhejo:")
+    context.user_data["awaiting_admin_password"] = True
+
+# 🔐 LOGOUT
+async def admin_logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id in admin_sessions:
+        admin_sessions.remove(user_id)
+        await update.message.reply_text("🚪 Logout ho gaye")
+    else:
+        await update.message.reply_text("❌ Pehle login karo /admin")
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
+
+    # 🔐 Password check
+    if context.user_data.get("awaiting_admin_password"):
+        if update.message.text == ADMIN_PASSWORD:
+            admin_sessions.add(update.effective_user.id)
+            context.user_data["awaiting_admin_password"] = False
+            await update.message.reply_text("✅ Login Successful\n\n/users - Users list\n/logout - Logout")
+        else:
+            await update.message.reply_text("❌ Wrong Password")
+        return
 
     fixed = generate_ai(FIX_PROMPT + update.message.text)
     if not fixed:
@@ -315,9 +350,10 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(path):
             os.remove(path)
 
-# ===== ADMIN COMMAND =====
+# 🔥 ADMIN USERS
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in admin_sessions:
+        await update.message.reply_text("❌ Admin login karo /admin")
         return
 
     users = db.collection("users").stream()
@@ -336,7 +372,10 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("users", admin_users))  # 👈 admin
+    app.add_handler(CommandHandler("admin", admin_login))
+    app.add_handler(CommandHandler("logout", admin_logout))
+    app.add_handler(CommandHandler("users", admin_users))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
